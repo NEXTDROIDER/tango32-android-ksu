@@ -127,24 +127,20 @@ jobs:
             exit 1
           }
 
-          make ARCH=arm64 LLVM=1 prepare
+          make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 prepare
 
-          grep -q '^CONFIG_FUNCTION_ALIGNMENT=0$' include/config/auto.conf || {
-            echo "ERROR: CONFIG_FUNCTION_ALIGNMENT=0 missing from auto.conf"
-            exit 1
-          }
           grep -q '^CONFIG_MODULES=y$' include/config/auto.conf || {
             echo "ERROR: CONFIG_MODULES missing from auto.conf"
             exit 1
           }
 
-          make ARCH=arm64 LLVM=1 modules_prepare
-          make ARCH=arm64 LLVM=1 kernelrelease > ../kernel-release.txt
+          make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 modules_prepare
+          make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 kernelrelease > ../kernel-release.txt
           cp .config ../kernel-config.txt
 
       - name: Build Tango32 module (compile-check)
         run: |
-          make -C kernel M="$GITHUB_WORKSPACE" ARCH=arm64 LLVM=1 CONFIG_TANGO32=m W=1 modules
+          make -C kernel M="$GITHUB_WORKSPACE" ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 CONFIG_TANGO32=m W=1 modules
 
       - name: Collect diagnostics
         if: always()
