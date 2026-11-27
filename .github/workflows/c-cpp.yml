@@ -80,12 +80,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison flex build-essential git libssl-dev libelf-dev dwarves perl make clang lld llvm jq curl zip
 
+      - name: Set up JDK for installer build
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle for installer build
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
       - name: Build Tango Installer APK
         run: |
           set -euo pipefail
           git clone --depth=1 https://github.com/NEXTDROIDER/Tango32Installer.git Tango32Installer
-          sudo apt-get install -y openjdk-17-jdk
-          gradle --version >/dev/null 2>&1 || sudo apt-get install -y gradle
           cd Tango32Installer
           gradle --no-daemon assembleDebug
           mkdir -p ../installer-apk
