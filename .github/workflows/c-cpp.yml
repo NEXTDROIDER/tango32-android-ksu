@@ -221,32 +221,29 @@ jobs:
               exit 1
             }
 
-            prompt="$(cat <<'PROMPT'
-          You are analyzing Linux/Android kernel source to identify exact OPPO/OPlus smartphone or tablet models supported by THIS source tree.
-          
-          Use only the supplied source evidence. Do not guess from the SoC name, do not list generic development boards, and do not invent retail names. A model is eligible only when the evidence explicitly ties that model or its device codename to this kernel source. If evidence only identifies a Qualcomm SoC or generic board, return no device for it.
-          
-          Return JSON only, with this exact shape:
-          {
-            "devices": [
-              {
-                "model": "exact device model name as written in source",
-                "codename": "device codename if explicitly present, otherwise empty",
-                "evidence": "short exact identifying text copied from the supplied evidence"
-              }
-            ]
-          }
-          
-          Include every distinct OPPO/OPlus phone/tablet model explicitly supported by the evidence. Exclude OnePlus and unrelated vendors. Do not include explanations outside JSON.
-          PROMPT
-            )"
-            prompt="$prompt
+            cat > gemini-prompt.txt <<'PROMPT'
+            You are analyzing Linux/Android kernel source to identify exact OPPO/OPlus smartphone or tablet models supported by THIS source tree.
 
-            SOURCE EVIDENCE:
-            $(cat device-model-evidence.txt)"
+            Use only the supplied source evidence. Do not guess from the SoC name, do not list generic development boards, and do not invent retail names. A model is eligible only when the evidence explicitly ties that model or its device codename to this kernel source. If evidence only identifies a Qualcomm SoC or generic board, return no device for it.
+
+            Return JSON only, with this exact shape:
+            {
+              "devices": [
+                {
+                  "model": "exact device model name as written in source",
+                  "codename": "device codename if explicitly present, otherwise empty",
+                  "evidence": "short exact identifying text copied from the supplied evidence"
+                }
+              ]
+            }
+
+            Include every distinct OPPO/OPlus phone/tablet model explicitly supported by the evidence. Exclude OnePlus and unrelated vendors. Do not include explanations outside JSON.
+            PROMPT
+            printf '\n\nSOURCE EVIDENCE:\n' >> gemini-prompt.txt
+            cat device-model-evidence.txt >> gemini-prompt.txt
 
             echo "Asking Gemini (${GEMINI_MODEL}) to identify device models (temperature=0.1)..."
-            jq -n --arg prompt "$prompt" '{
+            jq -n --rawfile prompt gemini-prompt.txt '{
               contents: [{ role: "user", parts: [{ text: $prompt }] }],
               generationConfig: {
                 temperature: 0.1,
