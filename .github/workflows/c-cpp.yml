@@ -14,7 +14,7 @@ on:
         default: oppo/sm6225_b_16.0
         type: string
       device_model:
-        description: Phone/device model label for release
+        description: Device model, or "all" to detect OPPO/OPlus boards
         required: true
         default: OPPO CPH2819
         type: string
@@ -57,14 +57,15 @@ jobs:
           KERNEL_REPO: ${{ inputs.kernel_repo }}
           KERNEL_BRANCH: ${{ inputs.kernel_branch }}
         run: |
+          set -euo pipefail
           if ! [[ "$KERNEL_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-            echo "Invalid repo format"
+            echo "Invalid kernel repository format"
             exit 1
           fi
           git clone --depth=1 --single-branch --branch "$KERNEL_BRANCH" "https://github.com/$KERNEL_REPO.git" kernel
           echo "Kernel commit: $(git -C kernel rev-parse HEAD)"
 
-      - name: Disable unavailable vendor Kconfig includes (POSIX shell)
+      - name: Disable missing vendor Kconfig includes
         shell: bash
         run: |
           set -euo pipefail
@@ -81,215 +82,71 @@ jobs:
                     *'$'*) ;;
                     *)
                       if [ -n "$target" ] && [ ! -f "$target" ]; then
-                        printf '# CI compile-check skipped missing include: %s\\n' "$line" >> "$tmp"
+                        printf '# CI skipped missing Kconfig include: %s\n' "$line" >> "$tmp"
                         continue
                       fi
                       ;;
                   esac
                   ;;
               esac
-              printf '%s\\n' "$line" >> "$tmp"
+              printf '%s\n' "$line" >> "$tmp"
             done < "$file"
             if ! cmp -s "$file" "$tmp"; then
               cat "$tmp" > "$file"
-              echo "Patched missing Kconfig includes in $file"
+              echo "Patched missing includes in $file"
             fi
             rm -f "$tmp"
           done
-          if grep -nE '^[[:space:]]*(source|rsource|osource|orsource)[[:space:]]+"kernel/oplus_cpu/sched/Kconfig"' init/Kconfig; then
-            echo "Missing include remains active"
-            exit 1
-          fi
 
-      - name: Configure ARM64 kernel for compile-check
+      - name: Configure ARM64 kernel
+        shell: bash
         run: |
           set -euo pipefail
           cd kernel
           make ARCH=arm64 LLVM=1 defconfig
-
           scripts/config --enable MODULES
           scripts/config --enable FUTEX
           scripts/config --enable COMPAT
+          scripts/config --enable 64BIT
           scripts/config --disable MODVERSIONS
           make ARCH=arm64 LLVM=1 olddefconfig
 
-          # ARM64 requires CONFIG_64BIT; without it atomic64_t is not declared.
-          scripts/config --enable 64BIT
-          grep -q '^CONFIG_64BIT=y
-          scripts/config --set-val FUNCTION_ALIGNMENT 0
-          grep -q '^CONFIG_FUNCTION_ALIGNMENT=0$' .config || {
-            echo "ERROR: could not set CONFIG_FUNCTION_ALIGNMENT=0"
-            exit 1
-          }
-
-          # Restore MODULES after vendor Kconfig normalization.
-          scripts/config --enable MODULES
-          grep -q '^CONFIG_MODULES=y$' .config || {
-            echo "ERROR: scripts/config could not set CONFIG_MODULES=y"
-            exit 1
-          }
+          grep -q '^CONFIG_64BIT=y$' .config || { echo "CONFIG_64BIT is not enabled"; exit 1; }
+          grep -q '^CONFIG_MODULES=y$' .config || { echo "CONFIG_MODULES is not enabled"; exit 1; }
 
           make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 prepare
-
-          grep -q '^CONFIG_MODULES=y
-          make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 kernelrelease > ../kernel-release.txt
-          cp .config ../kernel-config.txt
-
-      - name: Build Tango32 module (compile-check)
-        run: |
-          make -C kernel M="$GITHUB_WORKSPACE" ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 CONFIG_TANGO32=m W=1 modules
-
-      - name: Collect diagnostics
-        if: always()
-        run: |
-          {
-            echo "Kernel repository: ${{ inputs.kernel_repo }}"
-            echo "Device model: ${{ inputs.device_model }}"
-            echo "Kernel branch: ${{ inputs.kernel_branch }}"
-            echo "Kernel commit:"
-            git -C kernel rev-parse HEAD 2>/dev/null || true
-            echo "Kernel release:"
-            cat kernel-release.txt 2>/dev/null || true
-            echo "Compiler:"
-            clang --version 2>/dev/null || true
-            echo "Module files:"
-            find . -maxdepth 3 -name '*.ko' -print
-          } > build-info.txt
-          cp kernel/.config kernel-config.txt 2>/dev/null || true
-
-      - name: Create separate releases for each detected OPPO board
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEVICE_MODEL: ${{ inputs.device_model }}
-          KERNEL_REPO: ${{ inputs.kernel_repo }}
-          KERNEL_BRANCH: ${{ inputs.kernel_branch }}
-        run: |
-          set -euo pipefail
-          test -f tango32.ko || { echo "ERROR: tango32.ko missing; refusing to publish"; exit 1; }
-          KERNEL_COMMIT="$(git -C kernel rev-parse HEAD)"
-          KERNEL_SHORT="${KERNEL_COMMIT:0:8}"
-          KERNEL_RELEASE="$(cat kernel-release.txt)"
-          mkdir -p release-assets
-          cp tango32.ko build-info.txt kernel-release.txt kernel-config.txt release-assets/
-          tar -czf release-assets/tango32-build-bundle.tar.gz -C release-assets tango32.ko build-info.txt kernel-release.txt kernel-config.txt
-
-          if [ "$DEVICE_MODEL" = "all" ]; then
-            : > device-models.txt
-            for base in kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts; do
-              [ -d "$base" ] || continue
-              find "$base" -type f -name '*.dts' -print0 |
-              while IFS= read -r -d '' file; do
-                # Match OPPO/OPlus in the actual compatible property, not comments or unrelated text.
-                if ! grep -Eiq '^[[:space:]]*compatible[[:space:]]*=.*(oppo|oplus)' "$file"; then
-                  continue
-                fi
-                # Do not classify OnePlus, Toradex, Valve, etc. as OPPO.
-                COMPAT="$(grep -E '^[[:space:]]*compatible[[:space:]]*=' "$file" | head -n1 || true)"
-                if printf '%s' "$COMPAT" | grep -Eiq 'oneplus|toradex|valve'; then
-                  continue
-                fi
-                MODEL="$(grep -Eo '^[[:space:]]*model[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | head -n1 | sed -E 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"//; s/"$//')"
-                if [ -z "$MODEL" ]; then
-                  MODEL="$(basename "$file" .dts)"
-                fi
-                printf '%s\n' "$MODEL"
-              done
-            done | sed '/^[[:space:]]*$/d' | sort -u > device-models.txt
-            if [ ! -s device-models.txt ]; then
-              echo "No OPPO/OPlus board DTS detected from compatible properties."
-              exit 1
-            fi
-            echo "Detected OPPO board models:"
-            cat device-models.txt
-          else
-            printf '%s\n' "$DEVICE_MODEL" > device-models.txt
-          fi
-
-          while IFS= read -r MODEL || [ -n "$MODEL" ]; do
-            [ -n "$MODEL" ] || continue
-            MODEL_SLUG="$(printf '%s' "$MODEL" | sed -E 's/[^A-Za-z0-9]+/-/g; s/^-|-$//g' | tr '[:upper:]' '[:lower:]')"
-            RELEASE_SLUG="$(printf '%s' "$KERNEL_RELEASE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.+_-]+/-/g')"
-            TAG="tango32-${MODEL_SLUG}-${RELEASE_SLUG}-${KERNEL_SHORT}"
-            TITLE="Tango32 · ${MODEL} · ${KERNEL_RELEASE} (${KERNEL_SHORT})"
-            if gh release view "$TAG" >/dev/null 2>&1; then
-              echo "Release already exists, skipping: $TAG"
-              continue
-            fi
-            NOTES="$(printf '%s\n'               '## Build details'               "- **Device model:** $MODEL"               "- **Kernel source:** $KERNEL_REPO"               "- **Branch:** $KERNEL_BRANCH"               "- **Kernel commit:** $KERNEL_COMMIT"               "- **Kernel release:** $KERNEL_RELEASE"               '- **Compiler:** Clang/LLVM (GitHub Actions)'               ''               '## Compatibility notice'               'Detected from OPPO/OPlus device-tree compatible properties. The module is compiled once for the selected kernel branch, not independently per model. Load only with a matching kernel config, headers, symbol versions and toolchain.'               ''               '## Assets'               'tango32.ko, build metadata/configuration, and bundle archive.')"
-            gh release create "$TAG" release-assets/* --title "$TITLE" --notes "$NOTES"
-            echo "Published release: $TAG"
-          done < device-models.txt
-
-          {
-            echo "Detected OPPO device models:"
-            cat device-models.txt
-          } >> build-info.txt
-      - name: Upload build artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tango32-compile-check
-          path: |
-            *.ko
-            build-info.txt
-            kernel-release.txt
-            kernel-config.txt
-          if-no-files-found: warn
-          retention-days: 14
- .config || {
-            echo "ERROR: ARM64 config is missing CONFIG_64BIT=y"
-            exit 1
-          }
-
-          # Avoid an empty -falign-functions= argument in this vendor Makefile.
-          scripts/config --set-val FUNCTION_ALIGNMENT 0
-          grep -q '^CONFIG_FUNCTION_ALIGNMENT=0$' .config || {
-            echo "ERROR: could not set CONFIG_FUNCTION_ALIGNMENT=0"
-            exit 1
-          }
-
-          # Restore MODULES after vendor Kconfig normalization.
-          scripts/config --enable MODULES
-          grep -q '^CONFIG_MODULES=y$' .config || {
-            echo "ERROR: scripts/config could not set CONFIG_MODULES=y"
-            exit 1
-          }
-
-          make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 prepare
-
-          grep -q '^CONFIG_MODULES=y$' include/config/auto.conf || {
-            echo "ERROR: CONFIG_MODULES missing from auto.conf"
-            exit 1
-          }
+          grep -q '^CONFIG_64BIT=y$' include/config/auto.conf || { echo "CONFIG_64BIT missing from auto.conf"; exit 1; }
+          grep -q '^CONFIG_MODULES=y$' include/config/auto.conf || { echo "CONFIG_MODULES missing from auto.conf"; exit 1; }
 
           make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 modules_prepare
           make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 kernelrelease > ../kernel-release.txt
           cp .config ../kernel-config.txt
 
-      - name: Build Tango32 module (compile-check)
+      - name: Build Tango32 module
         run: |
+          set -euo pipefail
           make -C kernel M="$GITHUB_WORKSPACE" ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 CONFIG_TANGO32=m W=1 modules
+          test -s tango32.ko
 
       - name: Collect diagnostics
         if: always()
         run: |
           {
             echo "Kernel repository: ${{ inputs.kernel_repo }}"
-            echo "Device model: ${{ inputs.device_model }}"
             echo "Kernel branch: ${{ inputs.kernel_branch }}"
+            echo "Requested device: ${{ inputs.device_model }}"
             echo "Kernel commit:"
             git -C kernel rev-parse HEAD 2>/dev/null || true
             echo "Kernel release:"
             cat kernel-release.txt 2>/dev/null || true
             echo "Compiler:"
             clang --version 2>/dev/null || true
-            echo "Module files:"
-            find . -maxdepth 3 -name '*.ko' -print
+            echo "Module:"
+            ls -lh tango32.ko 2>/dev/null || true
           } > build-info.txt
           cp kernel/.config kernel-config.txt 2>/dev/null || true
 
-      - name: Create separate releases for each detected OPPO board
+      - name: Create a separate release for each device model
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -298,7 +155,7 @@ jobs:
           KERNEL_BRANCH: ${{ inputs.kernel_branch }}
         run: |
           set -euo pipefail
-          test -f tango32.ko || { echo "ERROR: tango32.ko missing; refusing to publish"; exit 1; }
+          test -s tango32.ko
           KERNEL_COMMIT="$(git -C kernel rev-parse HEAD)"
           KERNEL_SHORT="${KERNEL_COMMIT:0:8}"
           KERNEL_RELEASE="$(cat kernel-release.txt)"
@@ -310,53 +167,59 @@ jobs:
             : > device-models.txt
             for base in kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts; do
               [ -d "$base" ] || continue
-              find "$base" -type f -name '*.dts' -print0 |
               while IFS= read -r -d '' file; do
-                # Match OPPO/OPlus in the actual compatible property, not comments or unrelated text.
-                if ! grep -Eiq '^[[:space:]]*compatible[[:space:]]*=.*(oppo|oplus)' "$file"; then
-                  continue
-                fi
-                # Do not classify OnePlus, Toradex, Valve, etc. as OPPO.
-                COMPAT="$(grep -E '^[[:space:]]*compatible[[:space:]]*=' "$file" | head -n1 || true)"
-                if printf '%s' "$COMPAT" | grep -Eiq 'oneplus|toradex|valve'; then
-                  continue
-                fi
-                MODEL="$(grep -Eo '^[[:space:]]*model[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | head -n1 | sed -E 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"//; s/"$//')"
-                if [ -z "$MODEL" ]; then
-                  MODEL="$(basename "$file" .dts)"
-                fi
-                printf '%s\n' "$MODEL"
-              done
-            done | sed '/^[[:space:]]*$/d' | sort -u > device-models.txt
+                compatible="$(grep -E '^[[:space:]]*compatible[[:space:]]*=' "$file" | head -n1 || true)"
+                printf '%s' "$compatible" | grep -Eiq 'oppo|oplus' || continue
+                printf '%s' "$compatible" | grep -Eiq 'oneplus|toradex|valve' && continue
+                model="$(grep -Eo '^[[:space:]]*model[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | head -n1 | sed -E 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"//; s/"$//')"
+                [ -n "$model" ] || model="$(basename "$file" .dts)"
+                printf '%s\n' "$model" >> device-models.txt
+              done < <(find "$base" -type f -name '*.dts' -print0)
+            done
+            sort -u -o device-models.txt device-models.txt
             if [ ! -s device-models.txt ]; then
-              echo "No OPPO/OPlus board DTS detected from compatible properties."
+              echo "No OPPO/OPlus device models found in DTS files"
               exit 1
             fi
-            echo "Detected OPPO board models:"
-            cat device-models.txt
           else
             printf '%s\n' "$DEVICE_MODEL" > device-models.txt
           fi
 
-          while IFS= read -r MODEL || [ -n "$MODEL" ]; do
-            [ -n "$MODEL" ] || continue
-            MODEL_SLUG="$(printf '%s' "$MODEL" | sed -E 's/[^A-Za-z0-9]+/-/g; s/^-|-$//g' | tr '[:upper:]' '[:lower:]')"
-            RELEASE_SLUG="$(printf '%s' "$KERNEL_RELEASE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.+_-]+/-/g')"
-            TAG="tango32-${MODEL_SLUG}-${RELEASE_SLUG}-${KERNEL_SHORT}"
-            TITLE="Tango32 · ${MODEL} · ${KERNEL_RELEASE} (${KERNEL_SHORT})"
-            if gh release view "$TAG" >/dev/null 2>&1; then
-              echo "Release already exists, skipping: $TAG"
+          while IFS= read -r model || [ -n "$model" ]; do
+            [ -n "$model" ] || continue
+            model_slug="$(printf '%s' "$model" | sed -E 's/[^A-Za-z0-9]+/-/g; s/^-|-$//g' | tr '[:upper:]' '[:lower:]')"
+            release_slug="$(printf '%s' "$KERNEL_RELEASE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.+_-]+/-/g')"
+            tag="tango32-${model_slug}-${release_slug}-${KERNEL_SHORT}"
+            title="Tango32 - ${model} - ${KERNEL_RELEASE}"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "Release already exists: $tag"
               continue
             fi
-            NOTES="$(printf '%s\n'               '## Build details'               "- **Device model:** $MODEL"               "- **Kernel source:** $KERNEL_REPO"               "- **Branch:** $KERNEL_BRANCH"               "- **Kernel commit:** $KERNEL_COMMIT"               "- **Kernel release:** $KERNEL_RELEASE"               '- **Compiler:** Clang/LLVM (GitHub Actions)'               ''               '## Compatibility notice'               'Detected from OPPO/OPlus device-tree compatible properties. The module is compiled once for the selected kernel branch, not independently per model. Load only with a matching kernel config, headers, symbol versions and toolchain.'               ''               '## Assets'               'tango32.ko, build metadata/configuration, and bundle archive.')"
-            gh release create "$TAG" release-assets/* --title "$TITLE" --notes "$NOTES"
-            echo "Published release: $TAG"
+
+            notes="$(cat <<EOF
+          ## Build details
+          - Device model: $model
+          - Kernel source: $KERNEL_REPO
+          - Branch: $KERNEL_BRANCH
+          - Kernel commit: $KERNEL_COMMIT
+          - Kernel release: $KERNEL_RELEASE
+
+          ## Compatibility
+          Device model was detected from the kernel device-tree source. This module was compiled once for the selected kernel branch, not separately for each listed model. Only load it on a kernel with matching configuration, headers, symbols and toolchain.
+
+          ## Assets
+          tango32.ko, kernel configuration, build information and bundle archive.
+          EOF
+          )"
+            gh release create "$tag" release-assets/* --title "$title" --notes "$notes"
+            echo "Published: $tag"
           done < device-models.txt
 
           {
-            echo "Detected OPPO device models:"
+            echo "Detected device models:"
             cat device-models.txt
           } >> build-info.txt
+
       - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -367,490 +230,6 @@ jobs:
             build-info.txt
             kernel-release.txt
             kernel-config.txt
-          if-no-files-found: warn
-          retention-days: 14
- include/config/auto.conf || {
-            echo "ERROR: CONFIG_MODULES missing from auto.conf"
-            exit 1
-          }
-          grep -q '^CONFIG_64BIT=y
-          make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 kernelrelease > ../kernel-release.txt
-          cp .config ../kernel-config.txt
-
-      - name: Build Tango32 module (compile-check)
-        run: |
-          make -C kernel M="$GITHUB_WORKSPACE" ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 CONFIG_TANGO32=m W=1 modules
-
-      - name: Collect diagnostics
-        if: always()
-        run: |
-          {
-            echo "Kernel repository: ${{ inputs.kernel_repo }}"
-            echo "Device model: ${{ inputs.device_model }}"
-            echo "Kernel branch: ${{ inputs.kernel_branch }}"
-            echo "Kernel commit:"
-            git -C kernel rev-parse HEAD 2>/dev/null || true
-            echo "Kernel release:"
-            cat kernel-release.txt 2>/dev/null || true
-            echo "Compiler:"
-            clang --version 2>/dev/null || true
-            echo "Module files:"
-            find . -maxdepth 3 -name '*.ko' -print
-          } > build-info.txt
-          cp kernel/.config kernel-config.txt 2>/dev/null || true
-
-      - name: Create separate releases for each detected OPPO board
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEVICE_MODEL: ${{ inputs.device_model }}
-          KERNEL_REPO: ${{ inputs.kernel_repo }}
-          KERNEL_BRANCH: ${{ inputs.kernel_branch }}
-        run: |
-          set -euo pipefail
-          test -f tango32.ko || { echo "ERROR: tango32.ko missing; refusing to publish"; exit 1; }
-          KERNEL_COMMIT="$(git -C kernel rev-parse HEAD)"
-          KERNEL_SHORT="${KERNEL_COMMIT:0:8}"
-          KERNEL_RELEASE="$(cat kernel-release.txt)"
-          mkdir -p release-assets
-          cp tango32.ko build-info.txt kernel-release.txt kernel-config.txt release-assets/
-          tar -czf release-assets/tango32-build-bundle.tar.gz -C release-assets tango32.ko build-info.txt kernel-release.txt kernel-config.txt
-
-          if [ "$DEVICE_MODEL" = "all" ]; then
-            : > device-models.txt
-            for base in kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts; do
-              [ -d "$base" ] || continue
-              find "$base" -type f -name '*.dts' -print0 |
-              while IFS= read -r -d '' file; do
-                # Match OPPO/OPlus in the actual compatible property, not comments or unrelated text.
-                if ! grep -Eiq '^[[:space:]]*compatible[[:space:]]*=.*(oppo|oplus)' "$file"; then
-                  continue
-                fi
-                # Do not classify OnePlus, Toradex, Valve, etc. as OPPO.
-                COMPAT="$(grep -E '^[[:space:]]*compatible[[:space:]]*=' "$file" | head -n1 || true)"
-                if printf '%s' "$COMPAT" | grep -Eiq 'oneplus|toradex|valve'; then
-                  continue
-                fi
-                MODEL="$(grep -Eo '^[[:space:]]*model[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | head -n1 | sed -E 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"//; s/"$//')"
-                if [ -z "$MODEL" ]; then
-                  MODEL="$(basename "$file" .dts)"
-                fi
-                printf '%s\n' "$MODEL"
-              done
-            done | sed '/^[[:space:]]*$/d' | sort -u > device-models.txt
-            if [ ! -s device-models.txt ]; then
-              echo "No OPPO/OPlus board DTS detected from compatible properties."
-              exit 1
-            fi
-            echo "Detected OPPO board models:"
-            cat device-models.txt
-          else
-            printf '%s\n' "$DEVICE_MODEL" > device-models.txt
-          fi
-
-          while IFS= read -r MODEL || [ -n "$MODEL" ]; do
-            [ -n "$MODEL" ] || continue
-            MODEL_SLUG="$(printf '%s' "$MODEL" | sed -E 's/[^A-Za-z0-9]+/-/g; s/^-|-$//g' | tr '[:upper:]' '[:lower:]')"
-            RELEASE_SLUG="$(printf '%s' "$KERNEL_RELEASE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.+_-]+/-/g')"
-            TAG="tango32-${MODEL_SLUG}-${RELEASE_SLUG}-${KERNEL_SHORT}"
-            TITLE="Tango32 · ${MODEL} · ${KERNEL_RELEASE} (${KERNEL_SHORT})"
-            if gh release view "$TAG" >/dev/null 2>&1; then
-              echo "Release already exists, skipping: $TAG"
-              continue
-            fi
-            NOTES="$(printf '%s\n'               '## Build details'               "- **Device model:** $MODEL"               "- **Kernel source:** $KERNEL_REPO"               "- **Branch:** $KERNEL_BRANCH"               "- **Kernel commit:** $KERNEL_COMMIT"               "- **Kernel release:** $KERNEL_RELEASE"               '- **Compiler:** Clang/LLVM (GitHub Actions)'               ''               '## Compatibility notice'               'Detected from OPPO/OPlus device-tree compatible properties. The module is compiled once for the selected kernel branch, not independently per model. Load only with a matching kernel config, headers, symbol versions and toolchain.'               ''               '## Assets'               'tango32.ko, build metadata/configuration, and bundle archive.')"
-            gh release create "$TAG" release-assets/* --title "$TITLE" --notes "$NOTES"
-            echo "Published release: $TAG"
-          done < device-models.txt
-
-          {
-            echo "Detected OPPO device models:"
-            cat device-models.txt
-          } >> build-info.txt
-      - name: Upload build artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tango32-compile-check
-          path: |
-            *.ko
-            build-info.txt
-            kernel-release.txt
-            kernel-config.txt
-          if-no-files-found: warn
-          retention-days: 14
- .config || {
-            echo "ERROR: ARM64 config is missing CONFIG_64BIT=y"
-            exit 1
-          }
-
-          # Avoid an empty -falign-functions= argument in this vendor Makefile.
-          scripts/config --set-val FUNCTION_ALIGNMENT 0
-          grep -q '^CONFIG_FUNCTION_ALIGNMENT=0$' .config || {
-            echo "ERROR: could not set CONFIG_FUNCTION_ALIGNMENT=0"
-            exit 1
-          }
-
-          # Restore MODULES after vendor Kconfig normalization.
-          scripts/config --enable MODULES
-          grep -q '^CONFIG_MODULES=y$' .config || {
-            echo "ERROR: scripts/config could not set CONFIG_MODULES=y"
-            exit 1
-          }
-
-          make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 prepare
-
-          grep -q '^CONFIG_MODULES=y$' include/config/auto.conf || {
-            echo "ERROR: CONFIG_MODULES missing from auto.conf"
-            exit 1
-          }
-
-          make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 modules_prepare
-          make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 kernelrelease > ../kernel-release.txt
-          cp .config ../kernel-config.txt
-
-      - name: Build Tango32 module (compile-check)
-        run: |
-          make -C kernel M="$GITHUB_WORKSPACE" ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 CONFIG_TANGO32=m W=1 modules
-
-      - name: Collect diagnostics
-        if: always()
-        run: |
-          {
-            echo "Kernel repository: ${{ inputs.kernel_repo }}"
-            echo "Device model: ${{ inputs.device_model }}"
-            echo "Kernel branch: ${{ inputs.kernel_branch }}"
-            echo "Kernel commit:"
-            git -C kernel rev-parse HEAD 2>/dev/null || true
-            echo "Kernel release:"
-            cat kernel-release.txt 2>/dev/null || true
-            echo "Compiler:"
-            clang --version 2>/dev/null || true
-            echo "Module files:"
-            find . -maxdepth 3 -name '*.ko' -print
-          } > build-info.txt
-          cp kernel/.config kernel-config.txt 2>/dev/null || true
-
-      - name: Create separate releases for each detected OPPO board
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEVICE_MODEL: ${{ inputs.device_model }}
-          KERNEL_REPO: ${{ inputs.kernel_repo }}
-          KERNEL_BRANCH: ${{ inputs.kernel_branch }}
-        run: |
-          set -euo pipefail
-          test -f tango32.ko || { echo "ERROR: tango32.ko missing; refusing to publish"; exit 1; }
-          KERNEL_COMMIT="$(git -C kernel rev-parse HEAD)"
-          KERNEL_SHORT="${KERNEL_COMMIT:0:8}"
-          KERNEL_RELEASE="$(cat kernel-release.txt)"
-          mkdir -p release-assets
-          cp tango32.ko build-info.txt kernel-release.txt kernel-config.txt release-assets/
-          tar -czf release-assets/tango32-build-bundle.tar.gz -C release-assets tango32.ko build-info.txt kernel-release.txt kernel-config.txt
-
-          if [ "$DEVICE_MODEL" = "all" ]; then
-            : > device-models.txt
-            for base in kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts; do
-              [ -d "$base" ] || continue
-              find "$base" -type f -name '*.dts' -print0 |
-              while IFS= read -r -d '' file; do
-                # Match OPPO/OPlus in the actual compatible property, not comments or unrelated text.
-                if ! grep -Eiq '^[[:space:]]*compatible[[:space:]]*=.*(oppo|oplus)' "$file"; then
-                  continue
-                fi
-                # Do not classify OnePlus, Toradex, Valve, etc. as OPPO.
-                COMPAT="$(grep -E '^[[:space:]]*compatible[[:space:]]*=' "$file" | head -n1 || true)"
-                if printf '%s' "$COMPAT" | grep -Eiq 'oneplus|toradex|valve'; then
-                  continue
-                fi
-                MODEL="$(grep -Eo '^[[:space:]]*model[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | head -n1 | sed -E 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"//; s/"$//')"
-                if [ -z "$MODEL" ]; then
-                  MODEL="$(basename "$file" .dts)"
-                fi
-                printf '%s\n' "$MODEL"
-              done
-            done | sed '/^[[:space:]]*$/d' | sort -u > device-models.txt
-            if [ ! -s device-models.txt ]; then
-              echo "No OPPO/OPlus board DTS detected from compatible properties."
-              exit 1
-            fi
-            echo "Detected OPPO board models:"
-            cat device-models.txt
-          else
-            printf '%s\n' "$DEVICE_MODEL" > device-models.txt
-          fi
-
-          while IFS= read -r MODEL || [ -n "$MODEL" ]; do
-            [ -n "$MODEL" ] || continue
-            MODEL_SLUG="$(printf '%s' "$MODEL" | sed -E 's/[^A-Za-z0-9]+/-/g; s/^-|-$//g' | tr '[:upper:]' '[:lower:]')"
-            RELEASE_SLUG="$(printf '%s' "$KERNEL_RELEASE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.+_-]+/-/g')"
-            TAG="tango32-${MODEL_SLUG}-${RELEASE_SLUG}-${KERNEL_SHORT}"
-            TITLE="Tango32 · ${MODEL} · ${KERNEL_RELEASE} (${KERNEL_SHORT})"
-            if gh release view "$TAG" >/dev/null 2>&1; then
-              echo "Release already exists, skipping: $TAG"
-              continue
-            fi
-            NOTES="$(printf '%s\n'               '## Build details'               "- **Device model:** $MODEL"               "- **Kernel source:** $KERNEL_REPO"               "- **Branch:** $KERNEL_BRANCH"               "- **Kernel commit:** $KERNEL_COMMIT"               "- **Kernel release:** $KERNEL_RELEASE"               '- **Compiler:** Clang/LLVM (GitHub Actions)'               ''               '## Compatibility notice'               'Detected from OPPO/OPlus device-tree compatible properties. The module is compiled once for the selected kernel branch, not independently per model. Load only with a matching kernel config, headers, symbol versions and toolchain.'               ''               '## Assets'               'tango32.ko, build metadata/configuration, and bundle archive.')"
-            gh release create "$TAG" release-assets/* --title "$TITLE" --notes "$NOTES"
-            echo "Published release: $TAG"
-          done < device-models.txt
-
-          {
-            echo "Detected OPPO device models:"
-            cat device-models.txt
-          } >> build-info.txt
-      - name: Upload build artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tango32-compile-check
-          path: |
-            *.ko
-            build-info.txt
-            kernel-release.txt
-            kernel-config.txt
-          if-no-files-found: warn
-          retention-days: 14
- include/config/auto.conf || {
-            echo "ERROR: CONFIG_64BIT missing from auto.conf; ARM64 atomic types cannot compile"
-            exit 1
-          }
-
-          make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 modules_prepare
-          make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 kernelrelease > ../kernel-release.txt
-          cp .config ../kernel-config.txt
-
-      - name: Build Tango32 module (compile-check)
-        run: |
-          make -C kernel M="$GITHUB_WORKSPACE" ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 CONFIG_TANGO32=m W=1 modules
-
-      - name: Collect diagnostics
-        if: always()
-        run: |
-          {
-            echo "Kernel repository: ${{ inputs.kernel_repo }}"
-            echo "Device model: ${{ inputs.device_model }}"
-            echo "Kernel branch: ${{ inputs.kernel_branch }}"
-            echo "Kernel commit:"
-            git -C kernel rev-parse HEAD 2>/dev/null || true
-            echo "Kernel release:"
-            cat kernel-release.txt 2>/dev/null || true
-            echo "Compiler:"
-            clang --version 2>/dev/null || true
-            echo "Module files:"
-            find . -maxdepth 3 -name '*.ko' -print
-          } > build-info.txt
-          cp kernel/.config kernel-config.txt 2>/dev/null || true
-
-      - name: Create separate releases for each detected OPPO board
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEVICE_MODEL: ${{ inputs.device_model }}
-          KERNEL_REPO: ${{ inputs.kernel_repo }}
-          KERNEL_BRANCH: ${{ inputs.kernel_branch }}
-        run: |
-          set -euo pipefail
-          test -f tango32.ko || { echo "ERROR: tango32.ko missing; refusing to publish"; exit 1; }
-          KERNEL_COMMIT="$(git -C kernel rev-parse HEAD)"
-          KERNEL_SHORT="${KERNEL_COMMIT:0:8}"
-          KERNEL_RELEASE="$(cat kernel-release.txt)"
-          mkdir -p release-assets
-          cp tango32.ko build-info.txt kernel-release.txt kernel-config.txt release-assets/
-          tar -czf release-assets/tango32-build-bundle.tar.gz -C release-assets tango32.ko build-info.txt kernel-release.txt kernel-config.txt
-
-          if [ "$DEVICE_MODEL" = "all" ]; then
-            : > device-models.txt
-            for base in kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts; do
-              [ -d "$base" ] || continue
-              find "$base" -type f -name '*.dts' -print0 |
-              while IFS= read -r -d '' file; do
-                # Match OPPO/OPlus in the actual compatible property, not comments or unrelated text.
-                if ! grep -Eiq '^[[:space:]]*compatible[[:space:]]*=.*(oppo|oplus)' "$file"; then
-                  continue
-                fi
-                # Do not classify OnePlus, Toradex, Valve, etc. as OPPO.
-                COMPAT="$(grep -E '^[[:space:]]*compatible[[:space:]]*=' "$file" | head -n1 || true)"
-                if printf '%s' "$COMPAT" | grep -Eiq 'oneplus|toradex|valve'; then
-                  continue
-                fi
-                MODEL="$(grep -Eo '^[[:space:]]*model[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | head -n1 | sed -E 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"//; s/"$//')"
-                if [ -z "$MODEL" ]; then
-                  MODEL="$(basename "$file" .dts)"
-                fi
-                printf '%s\n' "$MODEL"
-              done
-            done | sed '/^[[:space:]]*$/d' | sort -u > device-models.txt
-            if [ ! -s device-models.txt ]; then
-              echo "No OPPO/OPlus board DTS detected from compatible properties."
-              exit 1
-            fi
-            echo "Detected OPPO board models:"
-            cat device-models.txt
-          else
-            printf '%s\n' "$DEVICE_MODEL" > device-models.txt
-          fi
-
-          while IFS= read -r MODEL || [ -n "$MODEL" ]; do
-            [ -n "$MODEL" ] || continue
-            MODEL_SLUG="$(printf '%s' "$MODEL" | sed -E 's/[^A-Za-z0-9]+/-/g; s/^-|-$//g' | tr '[:upper:]' '[:lower:]')"
-            RELEASE_SLUG="$(printf '%s' "$KERNEL_RELEASE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.+_-]+/-/g')"
-            TAG="tango32-${MODEL_SLUG}-${RELEASE_SLUG}-${KERNEL_SHORT}"
-            TITLE="Tango32 · ${MODEL} · ${KERNEL_RELEASE} (${KERNEL_SHORT})"
-            if gh release view "$TAG" >/dev/null 2>&1; then
-              echo "Release already exists, skipping: $TAG"
-              continue
-            fi
-            NOTES="$(printf '%s\n'               '## Build details'               "- **Device model:** $MODEL"               "- **Kernel source:** $KERNEL_REPO"               "- **Branch:** $KERNEL_BRANCH"               "- **Kernel commit:** $KERNEL_COMMIT"               "- **Kernel release:** $KERNEL_RELEASE"               '- **Compiler:** Clang/LLVM (GitHub Actions)'               ''               '## Compatibility notice'               'Detected from OPPO/OPlus device-tree compatible properties. The module is compiled once for the selected kernel branch, not independently per model. Load only with a matching kernel config, headers, symbol versions and toolchain.'               ''               '## Assets'               'tango32.ko, build metadata/configuration, and bundle archive.')"
-            gh release create "$TAG" release-assets/* --title "$TITLE" --notes "$NOTES"
-            echo "Published release: $TAG"
-          done < device-models.txt
-
-          {
-            echo "Detected OPPO device models:"
-            cat device-models.txt
-          } >> build-info.txt
-      - name: Upload build artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tango32-compile-check
-          path: |
-            *.ko
-            build-info.txt
-            kernel-release.txt
-            kernel-config.txt
-          if-no-files-found: warn
-          retention-days: 14
- .config || {
-            echo "ERROR: ARM64 config is missing CONFIG_64BIT=y"
-            exit 1
-          }
-
-          # Avoid an empty -falign-functions= argument in this vendor Makefile.
-          scripts/config --set-val FUNCTION_ALIGNMENT 0
-          grep -q '^CONFIG_FUNCTION_ALIGNMENT=0$' .config || {
-            echo "ERROR: could not set CONFIG_FUNCTION_ALIGNMENT=0"
-            exit 1
-          }
-
-          # Restore MODULES after vendor Kconfig normalization.
-          scripts/config --enable MODULES
-          grep -q '^CONFIG_MODULES=y$' .config || {
-            echo "ERROR: scripts/config could not set CONFIG_MODULES=y"
-            exit 1
-          }
-
-          make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 prepare
-
-          grep -q '^CONFIG_MODULES=y$' include/config/auto.conf || {
-            echo "ERROR: CONFIG_MODULES missing from auto.conf"
-            exit 1
-          }
-
-          make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 modules_prepare
-          make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 kernelrelease > ../kernel-release.txt
-          cp .config ../kernel-config.txt
-
-      - name: Build Tango32 module (compile-check)
-        run: |
-          make -C kernel M="$GITHUB_WORKSPACE" ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 CONFIG_TANGO32=m W=1 modules
-
-      - name: Collect diagnostics
-        if: always()
-        run: |
-          {
-            echo "Kernel repository: ${{ inputs.kernel_repo }}"
-            echo "Device model: ${{ inputs.device_model }}"
-            echo "Kernel branch: ${{ inputs.kernel_branch }}"
-            echo "Kernel commit:"
-            git -C kernel rev-parse HEAD 2>/dev/null || true
-            echo "Kernel release:"
-            cat kernel-release.txt 2>/dev/null || true
-            echo "Compiler:"
-            clang --version 2>/dev/null || true
-            echo "Module files:"
-            find . -maxdepth 3 -name '*.ko' -print
-          } > build-info.txt
-          cp kernel/.config kernel-config.txt 2>/dev/null || true
-
-      - name: Create separate releases for each detected OPPO board
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DEVICE_MODEL: ${{ inputs.device_model }}
-          KERNEL_REPO: ${{ inputs.kernel_repo }}
-          KERNEL_BRANCH: ${{ inputs.kernel_branch }}
-        run: |
-          set -euo pipefail
-          test -f tango32.ko || { echo "ERROR: tango32.ko missing; refusing to publish"; exit 1; }
-          KERNEL_COMMIT="$(git -C kernel rev-parse HEAD)"
-          KERNEL_SHORT="${KERNEL_COMMIT:0:8}"
-          KERNEL_RELEASE="$(cat kernel-release.txt)"
-          mkdir -p release-assets
-          cp tango32.ko build-info.txt kernel-release.txt kernel-config.txt release-assets/
-          tar -czf release-assets/tango32-build-bundle.tar.gz -C release-assets tango32.ko build-info.txt kernel-release.txt kernel-config.txt
-
-          if [ "$DEVICE_MODEL" = "all" ]; then
-            : > device-models.txt
-            for base in kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts; do
-              [ -d "$base" ] || continue
-              find "$base" -type f -name '*.dts' -print0 |
-              while IFS= read -r -d '' file; do
-                # Match OPPO/OPlus in the actual compatible property, not comments or unrelated text.
-                if ! grep -Eiq '^[[:space:]]*compatible[[:space:]]*=.*(oppo|oplus)' "$file"; then
-                  continue
-                fi
-                # Do not classify OnePlus, Toradex, Valve, etc. as OPPO.
-                COMPAT="$(grep -E '^[[:space:]]*compatible[[:space:]]*=' "$file" | head -n1 || true)"
-                if printf '%s' "$COMPAT" | grep -Eiq 'oneplus|toradex|valve'; then
-                  continue
-                fi
-                MODEL="$(grep -Eo '^[[:space:]]*model[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | head -n1 | sed -E 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"//; s/"$//')"
-                if [ -z "$MODEL" ]; then
-                  MODEL="$(basename "$file" .dts)"
-                fi
-                printf '%s\n' "$MODEL"
-              done
-            done | sed '/^[[:space:]]*$/d' | sort -u > device-models.txt
-            if [ ! -s device-models.txt ]; then
-              echo "No OPPO/OPlus board DTS detected from compatible properties."
-              exit 1
-            fi
-            echo "Detected OPPO board models:"
-            cat device-models.txt
-          else
-            printf '%s\n' "$DEVICE_MODEL" > device-models.txt
-          fi
-
-          while IFS= read -r MODEL || [ -n "$MODEL" ]; do
-            [ -n "$MODEL" ] || continue
-            MODEL_SLUG="$(printf '%s' "$MODEL" | sed -E 's/[^A-Za-z0-9]+/-/g; s/^-|-$//g' | tr '[:upper:]' '[:lower:]')"
-            RELEASE_SLUG="$(printf '%s' "$KERNEL_RELEASE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.+_-]+/-/g')"
-            TAG="tango32-${MODEL_SLUG}-${RELEASE_SLUG}-${KERNEL_SHORT}"
-            TITLE="Tango32 · ${MODEL} · ${KERNEL_RELEASE} (${KERNEL_SHORT})"
-            if gh release view "$TAG" >/dev/null 2>&1; then
-              echo "Release already exists, skipping: $TAG"
-              continue
-            fi
-            NOTES="$(printf '%s\n'               '## Build details'               "- **Device model:** $MODEL"               "- **Kernel source:** $KERNEL_REPO"               "- **Branch:** $KERNEL_BRANCH"               "- **Kernel commit:** $KERNEL_COMMIT"               "- **Kernel release:** $KERNEL_RELEASE"               '- **Compiler:** Clang/LLVM (GitHub Actions)'               ''               '## Compatibility notice'               'Detected from OPPO/OPlus device-tree compatible properties. The module is compiled once for the selected kernel branch, not independently per model. Load only with a matching kernel config, headers, symbol versions and toolchain.'               ''               '## Assets'               'tango32.ko, build metadata/configuration, and bundle archive.')"
-            gh release create "$TAG" release-assets/* --title "$TITLE" --notes "$NOTES"
-            echo "Published release: $TAG"
-          done < device-models.txt
-
-          {
-            echo "Detected OPPO device models:"
-            cat device-models.txt
-          } >> build-info.txt
-      - name: Upload build artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tango32-compile-check
-          path: |
-            *.ko
-            build-info.txt
-            kernel-release.txt
-            kernel-config.txt
+            device-models.txt
           if-no-files-found: warn
           retention-days: 14
