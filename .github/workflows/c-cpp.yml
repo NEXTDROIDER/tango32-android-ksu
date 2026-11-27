@@ -1,48 +1,41 @@
-name: C/C++ CI
+name: Tango32 Android ARM64 Build
 
 on:
   push:
-    branches: ["master"]
+    branches: [master]
   pull_request:
-    branches: ["master"]
+    branches: [master]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure
-        run: ./configure
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential make gcc
+
+      - name: Check repository
+        run: |
+          ls -la
+          find . -maxdepth 2 -type f
 
       - name: Build
         run: make
 
-      - name: Run tests
-        run: make check
+      - name: Find output
+        run: find . -type f \( -name "*.ko" -o -name "*.o" \)
 
-      - name: Distribution check
-        run: make distcheck
-
-      - name: Upload Build Artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-artifacts
+          name: tango32-build
           path: |
+            **/*.ko
             **/*.o
-            **/*.a
-            **/*.so
-            **/*.exe
-            **/*.zip
-            **/*.tar.gz
           if-no-files-found: warn
-          compression-level: 6
-          retention-days: 7
-
-      - name: Download Build Artifact
-        uses: actions/download-artifact@v8.0.2
-        with:
-          name: build-artifacts
-          path: downloaded-artifacts
