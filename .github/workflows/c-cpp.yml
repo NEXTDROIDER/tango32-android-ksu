@@ -50,7 +50,7 @@ jobs:
           sudo apt-get install -y \
             bc bison flex build-essential git \
             libssl-dev libelf-dev dwarves \
-            python3 perl make clang-14 lld-14 llvm-14
+            python3 perl make clang lld llvm
 
       - name: Clone selected kernel source
         env:
@@ -69,23 +69,23 @@ jobs:
       - name: Configure ARM64 kernel for compile-check
         run: |
           cd kernel
-          make ARCH=arm64 LLVM=-14 defconfig
+          make ARCH=arm64 LLVM=1 defconfig
           scripts/config --enable FUTEX
           scripts/config --enable COMPAT
           scripts/config --enable MODULES
           # Compile-only: modules_prepare does not provide full Module.symvers.
           scripts/config --disable MODVERSIONS
-          make ARCH=arm64 LLVM=-14 olddefconfig
-          make ARCH=arm64 LLVM=-14 modules_prepare
-          echo "Kernel version: $(make ARCH=arm64 LLVM=-14 kernelversion)"
+          make ARCH=arm64 LLVM=1 olddefconfig
+          make ARCH=arm64 LLVM=1 modules_prepare
+          echo "Kernel version: $(make ARCH=arm64 LLVM=1 kernelversion)"
           grep -E 'CONFIG_(FUTEX|COMPAT|MODULES|MODVERSIONS)=' .config || true
           cp .config ../kernel-config.txt
-          make ARCH=arm64 LLVM=-14 kernelrelease > ../kernel-release.txt
+          make ARCH=arm64 LLVM=1 kernelrelease > ../kernel-release.txt
 
       - name: Build Tango32 module (compile-only)
         run: |
           make -C kernel M="$GITHUB_WORKSPACE" \
-            ARCH=arm64 LLVM=-14 CONFIG_TANGO32=m W=1 modules
+            ARCH=arm64 LLVM=1 CONFIG_TANGO32=m W=1 modules
 
       - name: Collect build diagnostics
         if: always()
@@ -98,7 +98,7 @@ jobs:
             echo "Kernel release:"
             cat kernel-release.txt 2>/dev/null || true
             echo "Compiler:"
-            clang-14 --version 2>/dev/null || true
+            clang --version 2>/dev/null || true
             echo "Module:"
             find . -maxdepth 3 -type f -name '*.ko' -print
           } > build-info.txt
