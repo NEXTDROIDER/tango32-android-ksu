@@ -189,7 +189,7 @@ jobs:
                   text = p.read_text(errors="ignore")
               except OSError:
                   continue
-              for compatible in re.findall(r'["\\']([^"\\']*oppo[^"\\']*)["\\']', text, re.I):
+              for compatible in re.findall(r"""["']([^"']*oppo[^"']*)["']""", text, re.I):
                   compatible = compatible.strip()
                   if compatible and len(compatible) < 120:
                       found.add(compatible)
