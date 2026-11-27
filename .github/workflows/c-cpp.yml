@@ -210,7 +210,7 @@ jobs:
                 done
             } > device-model-evidence.txt
 
-            # Keep the API request bounded without depending on Python or external parsers.
+            # Keep the API request bounded using standard shell utilities.
             evidence_bytes="$(wc -c < device-model-evidence.txt)"
             if [ "$evidence_bytes" -gt 180000 ]; then
               { sed -n '1,12p' device-model-evidence.txt; tail -c 179000 device-model-evidence.txt; } > device-model-evidence.trimmed.txt
