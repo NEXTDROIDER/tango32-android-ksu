@@ -13,6 +13,11 @@ on:
         required: true
         default: oppo/sm6225_b_16.0
         type: string
+      device_model:
+        description: Phone/device model label for release
+        required: true
+        default: OPPO CPH2819
+        type: string
       delay_minutes:
         description: Optional wait before starting (0-60 minutes)
         required: false
@@ -141,6 +146,7 @@ jobs:
         run: |
           {
             echo "Kernel repository: ${{ inputs.kernel_repo }}"
+            echo "Device model: ${{ inputs.device_model }}"
             echo "Kernel branch: ${{ inputs.kernel_branch }}"
             echo "Kernel commit:"
             git -C kernel rev-parse HEAD 2>/dev/null || true
@@ -152,6 +158,51 @@ jobs:
             find . -maxdepth 3 -name '*.ko' -print
           } > build-info.txt
           cp kernel/.config kernel-config.txt 2>/dev/null || true
+
+      - name: Create device-specific release on new kernel commit
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEVICE_MODEL: ${{ inputs.device_model }}
+          KERNEL_REPO: ${{ inputs.kernel_repo }}
+          KERNEL_BRANCH: ${{ inputs.kernel_branch }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEVICE_MODEL// }" ]; then
+            echo "Device model must not be empty"
+            exit 1
+          fi
+          KERNEL_COMMIT="$(git -C kernel rev-parse HEAD)"
+          KERNEL_SHORT="${KERNEL_COMMIT:0:8}"
+          KERNEL_RELEASE="$(cat kernel-release.txt)"
+          MODEL_SLUG="$(printf '%s' "$DEVICE_MODEL" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-|-$//g')"
+          RELEASE_SLUG="$(printf '%s' "$KERNEL_RELEASE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.+_-]+/-/g')"
+          TAG="tango32-${MODEL_SLUG}-${RELEASE_SLUG}-${KERNEL_SHORT}"
+          TITLE="Tango32 · ${DEVICE_MODEL} · ${KERNEL_RELEASE} (${KERNEL_SHORT})"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release already exists for this device/kernel commit: $TAG"
+            exit 0
+          fi
+
+          mkdir -p release-assets
+          cp tango32.ko build-info.txt kernel-release.txt kernel-config.txt release-assets/
+          tar -czf release-assets/tango32-build-bundle.tar.gz -C release-assets tango32.ko build-info.txt kernel-release.txt kernel-config.txt
+
+          NOTES="$(cat <<EOF
+          ## Build details
+          - **Device model:** $DEVICE_MODEL
+          - **Kernel source:** $KERNEL_REPO
+          - **Branch:** $KERNEL_BRANCH
+          - **Kernel commit:** $KERNEL_COMMIT
+          - **Kernel release:** $KERNEL_RELEASE
+          - **Compiler:** Clang/LLVM (GitHub Actions)
+
+          > This is a compile-check artifact. It is not guaranteed to be compatible/loadable on the device unless built with the exact matching kernel configuration, generated headers, symbol versions and toolchain.
+          EOF
+          )"
+          gh release create "$TAG" release-assets/* --title "$TITLE" --notes "$NOTES"
+          echo "Created release: $TAG"
 
       - name: Upload build artifacts
         if: always()
