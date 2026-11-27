@@ -1,79 +1,118 @@
-name: Tango32 Android ARM64
+name: Tango32 ARM64 kernel module build
 
 on:
   workflow_dispatch:
-  push:
-    branches: [master]
-  pull_request:
-    branches: [master]
+    inputs:
+      kernel_repo:
+        description: Kernel repository (owner/name)
+        required: true
+        default: oppo-source/android_kernel_oppo_sm6225
+        type: string
+      kernel_branch:
+        description: Kernel branch to compile against
+        required: true
+        default: oppo/sm6225_b_16.0
+        type: string
+      delay_minutes:
+        description: Optional wait before starting (0-60 minutes)
+        required: false
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-
-    env:
-      ARCH: arm64
-      LLVM: 1
+    timeout-minutes: 90
 
     steps:
       - name: Checkout Tango32
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Optional delay
+        env:
+          DELAY: ${{ inputs.delay_minutes }}
         run: |
-          sudo apt update
-          sudo apt install -y \
-            build-essential \
-            git \
-            bc \
-            bison \
-            flex \
-            libssl-dev \
-            libelf-dev \
-            dwarves \
-            python3 \
-            python3-pip \
-            clang \
-            lld \
-            llvm
+          if ! [[ "$DELAY" =~ ^[0-9]+$ ]] || [ "$DELAY" -gt 60 ]; then
+            echo "delay_minutes must be an integer from 0 to 60"
+            exit 1
+          fi
+          if [ "$DELAY" -gt 0 ]; then
+            echo "Waiting $DELAY minute(s) before starting..."
+            sleep "$((DELAY * 60))"
+          fi
 
-      - name: Clone Android kernel
+      - name: Install build dependencies
         run: |
-          git clone --depth=1 \
-            https://github.com/torvalds/linux.git \
-            kernel
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex build-essential git \
+            libssl-dev libelf-dev dwarves \
+            python3 perl make clang-14 lld-14 llvm-14
 
-      - name: Configure kernel
+      - name: Clone selected kernel source
+        env:
+          KERNEL_REPO: ${{ inputs.kernel_repo }}
+          KERNEL_BRANCH: ${{ inputs.kernel_branch }}
+        run: |
+          if ! [[ "$KERNEL_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "Invalid repo format. Expected owner/repository"
+            exit 1
+          fi
+          git clone --depth=1 --single-branch --branch "$KERNEL_BRANCH" \
+            "https://github.com/$KERNEL_REPO.git" kernel
+          echo "Kernel commit: $(git -C kernel rev-parse HEAD)"
+          echo "Kernel branch: $KERNEL_BRANCH"
+
+      - name: Configure ARM64 kernel for compile-check
         run: |
           cd kernel
+          make ARCH=arm64 LLVM=-14 defconfig
+          scripts/config --enable FUTEX
+          scripts/config --enable COMPAT
+          scripts/config --enable MODULES
+          # Compile-only: modules_prepare does not provide full Module.symvers.
+          scripts/config --disable MODVERSIONS
+          make ARCH=arm64 LLVM=-14 olddefconfig
+          make ARCH=arm64 LLVM=-14 modules_prepare
+          echo "Kernel version: $(make ARCH=arm64 LLVM=-14 kernelversion)"
+          grep -E 'CONFIG_(FUTEX|COMPAT|MODULES|MODVERSIONS)=' .config || true
+          cp .config ../kernel-config.txt
+          make ARCH=arm64 LLVM=-14 kernelrelease > ../kernel-release.txt
 
-          make ARCH=arm64 LLVM=1 defconfig
-
-          scripts/config \
-            --file .config \
-            -m TANGO32
-
-          make ARCH=arm64 LLVM=1 olddefconfig
-
-          make ARCH=arm64 LLVM=1 modules_prepare
-
-      - name: Build Tango32
+      - name: Build Tango32 module (compile-only)
         run: |
-          make \
-            KERNEL_SRC="$GITHUB_WORKSPACE/kernel" \
-            M="$GITHUB_WORKSPACE" \
-            ARCH=arm64 \
-            LLVM=1 \
-            modules
+          make -C kernel M="$GITHUB_WORKSPACE" \
+            ARCH=arm64 LLVM=-14 CONFIG_TANGO32=m W=1 modules
 
-      - name: Find module
+      - name: Collect build diagnostics
+        if: always()
         run: |
-          find . -type f -name "*.ko"
+          {
+            echo "Repo: ${{ inputs.kernel_repo }}"
+            echo "Branch: ${{ inputs.kernel_branch }}"
+            echo "Kernel commit:"
+            git -C kernel rev-parse HEAD 2>/dev/null || true
+            echo "Kernel release:"
+            cat kernel-release.txt 2>/dev/null || true
+            echo "Compiler:"
+            clang-14 --version 2>/dev/null || true
+            echo "Module:"
+            find . -maxdepth 3 -type f -name '*.ko' -print
+          } > build-info.txt
+          cp kernel/.config kernel-config.txt 2>/dev/null || true
 
-      - name: Upload module
+      - name: Upload module and diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tango32-android-arm64
-          path: "**/*.ko"
-          if-no-files-found: error
-          retention-days: 30
+          name: tango32-compile-check
+          path: |
+            *.ko
+            build-info.txt
+            kernel-release.txt
+            kernel-config.txt
+          if-no-files-found: warn
+          retention-days: 14
