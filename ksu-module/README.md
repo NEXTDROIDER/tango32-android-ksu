@@ -2,8 +2,16 @@
 
 Install the ZIP from the KernelSU app (Modules → Install from storage), then reboot.
 
-The installer checks that the device is ARM64 and that `uname -r` exactly matches the kernel release used for this build. The module's boot script loads `tango32.ko` with `insmod` and records the result in `/data/local/tmp/tango32-ksu.log`.
+The installer checks that the device is ARM64. The module's boot script loads `tango32.ko` with `insmod` and records the result in `/data/local/tmp/tango32-ksu.log`. Kernel release mismatch checking is disabled in this experimental build.
 
-If the kernel release does not match, installation is refused. A matching release string is necessary but does not guarantee matching kernel configuration, exported symbols, compiler settings, or ABI. Do not bypass a failed load or force-load the module on a daily-use device.
+## APK low-target-SDK bypass helper
+
+The module installs `/system/bin/tango32-install-apk`. Run it as root to copy APKs out of shared storage into `/data/local/tmp` and install using Android's low-target-SDK bypass:
+
+```sh
+su -c 'tango32-install-apk /storage/emulated/0/Download/app.apk'
+```
+
+The helper uses `pm install --bypass-low-target-sdk-block -r`. This bypass only skips the minimum target-SDK installation block; it does not guarantee an old app will run correctly on modern Android.
 
 Use the KernelSU Manager Action button to inspect load status and logs.
