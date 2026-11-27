@@ -64,64 +64,34 @@ jobs:
           git clone --depth=1 --single-branch --branch "$KERNEL_BRANCH" "https://github.com/$KERNEL_REPO.git" kernel
           echo "Kernel commit: $(git -C kernel rev-parse HEAD)"
 
-      - name: Disable unavailable OPPO vendor Kconfig entries for compile-check
+      - name: Disable unavailable vendor Kconfig includes (Bash only)
         run: |
+          set -euo pipefail
           cd kernel
-          python3 - <<'PY'
-          from pathlib import Path
-          root = Path.cwd()
-          # This is a compile-only generic config, so vendor-only menu includes
-          # that aren't present in the checkout are commented out.
-          files_to_check = [
-              root / "init/Kconfig",
-              root / "drivers/soc/Kconfig",
-              root / "mm/Kconfig",
-              root / "kernel/Kconfig.locks",
-              root / "drivers/power/Kconfig",
-              root / "drivers/android/Kconfig",
-              root / "drivers/input/Kconfig",
-              root / "drivers/input/touchscreen/Kconfig",
-              root / "kernel/oplus_cpu/Kconfig",
-          ]
-          missing = []
-          changed = []
-          for p in files_to_check:
-              if not p.is_file():
+          for file in init/Kconfig drivers/soc/Kconfig mm/Kconfig kernel/Kconfig.locks drivers/power/Kconfig drivers/android/Kconfig drivers/input/Kconfig drivers/input/touchscreen/Kconfig kernel/oplus_cpu/Kconfig; do
+            [ -f "$file" ] || continue
+            tmp="$(mktemp)"
+            while IFS= read -r line || [ -n "$line" ]; do
+              trimmed="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//')"
+              if [[ "$trimmed" =~ ^(source|rsource|osource|orsource)[[:space:]]+"([^"]+)" ]]; then
+                target="${BASH_REMATCH[2]}"
+                if [[ "$target" != *'$'* ]] && [ ! -f "$target" ]; then
+                  printf '# CI compile-check skipped missing include: %s\n' "$line" >> "$tmp"
                   continue
-              original = p.read_text(errors="replace").splitlines()
-              output = []
-              touched = False
-              for line in original:
-                  stripped = line.strip()
-                  if stripped.startswith(("source ", "rsource ", "osource ", "orsource ")):
-                      q1, q2 = stripped.find('"'), stripped.rfind('"')
-                      if q1 != -1 and q2 > q1:
-                          target = stripped[q1+1:q2]
-                          # Kconfig source paths are relative to kernel root.
-                          if not target.startswith("$") and not (root / target).is_file():
-                              missing.append(f"{p.relative_to(root)}: {target}")
-                              output.append("# CI compile-check: skipped missing vendor include: " + stripped)
-                              touched = True
-                              continue
-                  output.append(line)
-              if touched:
-                  p.write_text("\n".join(output) + "\n")
-                  changed.append(str(p.relative_to(root)))
-          print("PATCHED FILES:", changed)
-          print("MISSING INCLUDES COMMENTED:", missing)
-          # Validate active directives, not the comment text.
-          init = root / "init/Kconfig"
-          active = []
-          if init.exists():
-              for line in init.read_text(errors="replace").splitlines():
-                  s = line.strip()
-                  if s.startswith(("source ", "rsource ", "osource ", "orsource ")) and '"kernel/oplus_cpu/sched/Kconfig"' in s:
-                      active.append(line)
-          if active:
-              print("Still-active missing include:", active)
-              raise SystemExit(1)
-          PY
-          grep -n "oplus_cpu/sched/Kconfig" init/Kconfig || true
+                fi
+              fi
+              printf '%s\n' "$line" >> "$tmp"
+            done < "$file"
+            if ! cmp -s "$file" "$tmp"; then
+              cat "$tmp" > "$file"
+              echo "Patched missing Kconfig includes in $file"
+            fi
+            rm -f "$tmp"
+          done
+          if grep -nE '^[[:space:]]*(source|rsource|osource|orsource)[[:space:]]+"kernel/oplus_cpu/sched/Kconfig"' init/Kconfig; then
+            echo "Missing include remains active"
+            exit 1
+          fi
 
       - name: Configure ARM64 kernel for compile-check
         run: |
@@ -159,7 +129,7 @@ jobs:
           } > build-info.txt
           cp kernel/.config kernel-config.txt 2>/dev/null || true
 
-      - name: Create releases for selected device(s)
+      - name: Create separate releases for each detected OPPO board
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -168,6 +138,7 @@ jobs:
           KERNEL_BRANCH: ${{ inputs.kernel_branch }}
         run: |
           set -euo pipefail
+          test -f tango32.ko || { echo "ERROR: tango32.ko missing; refusing to publish"; exit 1; }
           KERNEL_COMMIT="$(git -C kernel rev-parse HEAD)"
           KERNEL_SHORT="${KERNEL_COMMIT:0:8}"
           KERNEL_RELEASE="$(cat kernel-release.txt)"
@@ -177,30 +148,34 @@ jobs:
 
           if [ "$DEVICE_MODEL" = "all" ]; then
             : > device-models.txt
-            # One entry per real board DTS; shared DTSI files are never releases.
             for base in kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts; do
               [ -d "$base" ] || continue
               find "$base" -type f -name '*.dts' -print0 |
               while IFS= read -r -d '' file; do
-                if ! grep -Eiq 'oppo|oplus|oneplus' "$file"; then
+                # Match OPPO/OPlus in the actual compatible property, not comments or unrelated text.
+                if ! grep -Eiq '^[[:space:]]*compatible[[:space:]]*=.*(oppo|oplus)' "$file"; then
                   continue
                 fi
-                MODEL="$(grep -Eo 'model[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | head -n1 | sed -E 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"//; s/"$//')"
-                if [ -z "$MODEL" ]; then
-                  MODEL="$(grep -Eo 'compatible[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | head -n1 | sed -E 's/^[[:space:]]*compatible[[:space:]]*=[[:space:]]*"//; s/"$//')"
+                # Do not classify OnePlus, Toradex, Valve, etc. as OPPO.
+                COMPAT="$(grep -E '^[[:space:]]*compatible[[:space:]]*=' "$file" | head -n1 || true)"
+                if printf '%s' "$COMPAT" | grep -Eiq 'oneplus|toradex|valve'; then
+                  continue
                 fi
-                [ -n "$MODEL" ] || MODEL="$(basename "$file" .dts)"
+                MODEL="$(grep -Eo '^[[:space:]]*model[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | head -n1 | sed -E 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"//; s/"$//')"
+                if [ -z "$MODEL" ]; then
+                  MODEL="$(basename "$file" .dts)"
+                fi
                 printf '%s\n' "$MODEL"
               done
             done | sed '/^[[:space:]]*$/d' | sort -u > device-models.txt
             if [ ! -s device-models.txt ]; then
-              echo "No OPPO/OPlus/OnePlus board DTS models found in this kernel source."
+              echo "No OPPO/OPlus board DTS detected from compatible properties."
               exit 1
             fi
-            echo "Detected board models:"
+            echo "Detected OPPO board models:"
             cat device-models.txt
           else
-            printf '%s\\n' "$DEVICE_MODEL" > device-models.txt
+            printf '%s\n' "$DEVICE_MODEL" > device-models.txt
           fi
 
           while IFS= read -r MODEL || [ -n "$MODEL" ]; do
@@ -213,28 +188,15 @@ jobs:
               echo "Release already exists, skipping: $TAG"
               continue
             fi
-            NOTES="$(cat <<EOF
-          ## Build details
-          - **Device identifier/model:** $MODEL
-          - **Kernel source:** $KERNEL_REPO
-          - **Branch:** $KERNEL_BRANCH
-          - **Kernel commit:** $KERNEL_COMMIT
-          - **Kernel release:** $KERNEL_RELEASE
-          - **Compiler:** Clang/LLVM (GitHub Actions)
-
-          ## Important compatibility notice
-          This release is a compile-check artifact from the selected shared kernel source. When `device_model=all`, each distinct OPPO/OPlus device model declared in a device-tree source gets its own release, but the module binary is compiled only once from the selected kernel branch and is **not separately built or validated for each device**. Do not load it unless the exact device kernel configuration, headers, symbol versions and toolchain match.
-
-          ## Assets
-          `tango32.ko`, build metadata/configuration, and a bundle archive.
-          EOF
-          )"
+            NOTES="$(printf '%s\n'               '## Build details'               "- **Device model:** $MODEL"               "- **Kernel source:** $KERNEL_REPO"               "- **Branch:** $KERNEL_BRANCH"               "- **Kernel commit:** $KERNEL_COMMIT"               "- **Kernel release:** $KERNEL_RELEASE"               '- **Compiler:** Clang/LLVM (GitHub Actions)'               ''               '## Compatibility notice'               'Detected from OPPO/OPlus device-tree compatible properties. The module is compiled once for the selected kernel branch, not independently per model. Load only with a matching kernel config, headers, symbol versions and toolchain.'               ''               '## Assets'               'tango32.ko, build metadata/configuration, and bundle archive.')"
             gh release create "$TAG" release-assets/* --title "$TITLE" --notes "$NOTES"
             echo "Published release: $TAG"
           done < device-models.txt
 
-          echo "Detected device-tree files/models:" >> build-info.txt
-          cat device-models.txt >> build-info.txt
+          {
+            echo "Detected OPPO device models:"
+            cat device-models.txt
+          } >> build-info.txt
       - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
