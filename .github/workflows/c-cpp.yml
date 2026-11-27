@@ -73,13 +73,16 @@ jobs:
             tmp="$(mktemp)"
             while IFS= read -r line || [ -n "$line" ]; do
               trimmed="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//')"
-              if [[ "$trimmed" =~ ^(source|rsource|osource|orsource)[[:space:]]+"([^"]+)" ]]; then
-                target="${BASH_REMATCH[2]}"
-                if [[ "$target" != *'$'* ]] && [ ! -f "$target" ]; then
-                  printf '# CI compile-check skipped missing include: %s\n' "$line" >> "$tmp"
-                  continue
-                fi
-              fi
+              directive="$(printf '%s' "$trimmed" | cut -d ' ' -f1)"
+              case "$directive" in
+                source|rsource|osource|orsource)
+                  target="$(printf '%s' "$trimmed" | sed -n 's/^[^"]*"\([^"]*\)".*/\1/p')"
+                  if [ -n "$target" ] && case "$target" in *'$'*) false ;; *) true ;; esac && [ ! -f "$target" ]; then
+                    printf '# CI compile-check skipped missing include: %s\n' "$line" >> "$tmp"
+                    continue
+                  fi
+                  ;;
+              esac
               printf '%s\n' "$line" >> "$tmp"
             done < "$file"
             if ! cmp -s "$file" "$tmp"; then
