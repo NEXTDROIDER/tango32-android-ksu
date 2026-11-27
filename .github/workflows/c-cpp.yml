@@ -176,14 +176,25 @@ jobs:
           tar -czf release-assets/tango32-build-bundle.tar.gz -C release-assets tango32.ko build-info.txt kernel-release.txt kernel-config.txt
 
           if [ "$DEVICE_MODEL" = "all" ]; then
-            find kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts \
-              -type f \( -name '*.dts' -o -name '*.dtsi' \) 2>/dev/null \
-              | grep -Ei 'oppo|oplus|oneplus' > device-models.txt || true
+            : > device-models.txt
+            # Enumerate actual device DTS files (not shared .dtsi fragments).
+            for base in kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts; do
+              [ -d "$base" ] || continue
+              find "$base" -type f -name '*.dts' -print0 |
+              while IFS= read -r -d '' file; do
+                if ! grep -Eiq 'oppo|oplus|oneplus' "$file" || ! grep -Eiq 'model[[:space:]]*=' "$file"; then
+                  continue
+                fi
+                MODEL="$(sed -nE 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$file" | head -n1)"
+                [ -n "$MODEL" ] || MODEL="$(basename "$file" .dts)"
+                printf '%s\n' "$MODEL"
+              done
+            done | sort -u > device-models.txt
             if [ ! -s device-models.txt ]; then
-              echo "No OPPO/OPlus device-tree files found; cannot expand 'all'."
+              echo "No OPPO/OPlus device DTS models found in this kernel source."
               exit 1
             fi
-            echo "OPPO/OPlus device-tree files discovered:"
+            echo "Distinct device models discovered (one release each):"
             cat device-models.txt
           else
             printf '%s\\n' "$DEVICE_MODEL" > device-models.txt
