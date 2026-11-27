@@ -4,12 +4,6 @@ LOG="/data/local/tmp/tango32-ksu.log"
 
 {
   echo "[$(date)] Tango32 service starting"
-  EXPECTED_RELEASE="$(cat "$MODDIR/kernel.release" 2>/dev/null)"
-  CURRENT_RELEASE="$(uname -r)"
-  if [ -z "$EXPECTED_RELEASE" ] || [ "$CURRENT_RELEASE" != "$EXPECTED_RELEASE" ]; then
-    echo "SKIP: kernel mismatch (built=$EXPECTED_RELEASE device=$CURRENT_RELEASE)"
-    exit 0
-  fi
 
   if grep -q '^tango32 ' /proc/modules 2>/dev/null; then
     echo "Tango32 is already loaded"
