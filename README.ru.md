@@ -4,9 +4,9 @@
 
 **Поддержка совместимости с ARM32 в Android-ядрах только для ARM64**
 
-[![Сборка](https://github.com/NEXTDROIDER/tango32-module/actions/workflows/c-cpp.yml/badge.svg)](https://github.com/NEXTDROIDER/tango32-module/actions/workflows/c-cpp.yml)
-[![Архитектура](https://img.shields.io/badge/архитектура-ARM64-blue)](https://github.com/NEXTDROIDER/tango32-module)
-[![Ядро](https://img.shields.io/badge/ядро-5.6%2B-informational)](https://github.com/NEXTDROIDER/tango32-module)
+[![Сборка](https://github.com/NEXTDROIDER/tango32-android-ksu/actions/workflows/c-cpp.yml/badge.svg)](https://github.com/NEXTDROIDER/tango32-android-ksu/actions/workflows/c-cpp.yml)
+[![Архитектура](https://img.shields.io/badge/архитектура-ARM64-blue)](https://github.com/NEXTDROIDER/tango32-android-ksu)
+[![Ядро](https://img.shields.io/badge/ядро-5.6%2B-informational)](https://github.com/NEXTDROIDER/tango32-android-ksu)
 [![Лицензия](https://img.shields.io/badge/license-GPL--2.0-green)](COPYING)
 
 <img src="assets/tango32-banner.svg" alt="Процесс сборки Tango32" width="100%">
@@ -26,7 +26,8 @@
 ## Возможности
 
 - Сборка модулей ядра ARM64 с использованием Clang/LLVM.
-- Выбор репозитория и ветки ядра при запуске workflow.
+- Выбор репозитория, ветки и точной версии ядра устройства при запуске workflow.
+- Запрет сборки и публикации ZIP, если `kernelrelease` исходников не совпадает с версией ядра телефона.
 - Отдельные релизы с указанием обнаруженной модели устройства.
 - Релизы не дублируются для одной и той же **модели устройства и коммита исходников ядра**.
 - Артефакты содержат модуль, конфигурацию и версию ядра, а также метаданные сборки.
@@ -38,7 +39,8 @@
 2. Нажмите **Run workflow**.
 3. Укажите модель телефона (например, `OPPO CPH2819`) или введите `all`, чтобы просканировать совместимые идентификаторы OPPO в дереве устройств выбранного исходного кода ядра.
 4. Выберите репозиторий и ветку ядра.
-5. Запустите workflow и дождитесь компиляции и публикации релизов.
+5. В поле **Expected kernel release** укажите точный результат команды `uname -r` на телефоне (для OPPO CPH2819 из предоставленного лога установки: `5.15.197-android13-8-o-01072-gdf6fcd9bb084`).
+6. Запустите workflow. Если выбранный исходный код выдаёт другую строку `kernelrelease`, сборка остановится до компиляции модуля и публикации ZIP.
 
 Исходный код по умолчанию:
 - Репозиторий: `oppo-source/android_kernel_oppo_sm6225`
