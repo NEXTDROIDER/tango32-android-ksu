@@ -14,7 +14,7 @@ on:
         default: oppo/sm6225_b_16.0
         type: string
       device_model:
-        description: One model, comma-separated model list, or "all" to detect OPPO/OPlus device trees
+        description: One model, comma-separated model list, or "all" to detect models with Gemini API
         required: true
         default: OPPO CPH2819
         type: string
@@ -50,7 +50,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex build-essential git libssl-dev libelf-dev dwarves perl make clang lld llvm
+          sudo apt-get install -y bc bison flex build-essential git libssl-dev libelf-dev dwarves perl make clang lld llvm jq curl
 
       - name: Clone selected kernel source
         env:
@@ -153,6 +153,8 @@ jobs:
           DEVICE_MODEL: ${{ inputs.device_model }}
           KERNEL_REPO: ${{ inputs.kernel_repo }}
           KERNEL_BRANCH: ${{ inputs.kernel_branch }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-2.5-flash
         run: |
           set -euo pipefail
           test -s tango32.ko
@@ -164,49 +166,122 @@ jobs:
           tar -czf release-assets/tango32-build-bundle.tar.gz -C release-assets tango32.ko build-info.txt kernel-release.txt kernel-config.txt
 
           if [ "$DEVICE_MODEL" = "all" ]; then
-            : > device-models.txt
-            for base in kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts; do
-              [ -d "$base" ] || continue
-              while IFS= read -r -d '' file; do
-                # Read complete compatible properties, including multiline values.
-                compatible="$(awk '
-                  /^[[:space:]]*compatible[[:space:]]*=/ { active=1 }
-                  active { printf "%s ", $0; if ($0 ~ /;/) active=0 }
-                ' "$file")"
-                model_line="$(grep -E '^[[:space:]]*model[[:space:]]*=' "$file" | sed -n '1p' || true)"
-                identity="$compatible $model_line"
-
-                # Only include device trees explicitly identifying OPPO/OPlus.
-                printf '%s' "$identity" | grep -Eiq 'oppo|oplus' || continue
-                printf '%s' "$identity" | grep -Eiq 'oneplus|toradex|valve' && continue
-
-                model="$(printf '%s\n' "$model_line" | sed -nE 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p')"
-                [ -n "$model" ] || model="$(basename "$file" .dts)"
-                printf '%s\n' "$model" >> device-models.txt
-              done < <(find -L "$base" -type f -name '*.dts' -print0)
-            done
-
-            sort -u -o device-models.txt device-models.txt
-            if [ ! -s device-models.txt ]; then
-              echo "ERROR: No OPPO/OPlus device models were found."
-              echo "This kernel repository keeps its vendor device tree outside the checkout:"
-              if [ -L kernel/arch/arm64/boot/dts/vendor ]; then
-                echo "  arch/arm64/boot/dts/vendor -> $(readlink kernel/arch/arm64/boot/dts/vendor)"
-                if [ ! -e kernel/arch/arm64/boot/dts/vendor ]; then
-                  echo "  The symlink target is missing; the external Qualcomm device-tree repository was not cloned."
-                fi
-              fi
-              echo "Automatic per-device detection requires that external device-tree source."
-              echo "For now, rerun with device_model set to a comma-separated list of exact model names."
-              echo "DTS files found:"
-              find kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts -type f -name '*.dts' -print 2>/dev/null | head -n 30 || true
-              echo "Sample model properties:"
-              grep -R -h -E '^[[:space:]]*model[[:space:]]*=' kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts 2>/dev/null | sed -n '1,30p' || true
+            if [ -z "${GEMINI_API_KEY:-}" ]; then
+              echo "ERROR: Add GEMINI_API_KEY in GitHub Settings > Secrets and variables > Actions."
               exit 1
             fi
-            echo "Detected OPPO/OPlus device models:"
+
+            echo "Collecting device identity evidence from the selected kernel source..."
+            {
+              echo "KERNEL_REPOSITORY=$KERNEL_REPO"
+              echo "KERNEL_BRANCH=$KERNEL_BRANCH"
+              echo "KERNEL_COMMIT=$KERNEL_COMMIT"
+              echo
+              echo "=== Device-tree symlinks ==="
+              find kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts -type l -printf '%p -> %l\n' 2>/dev/null || true
+              echo
+              echo "=== Device identity declarations ==="
+              find kernel -type f \\( -name '*.dts' -o -name '*.dtsi' -o -name '*defconfig' -o -name '*.mk' -o -name '*.bp' -o -name '*. prop' \\) -size -2M -print0 |
+                while IFS= read -r -d '' file; do
+                  matches="$(grep -nI -E '^[[:space:]]*(model|compatible)[[:space:]]*=|qcom,board-id|qcom,msm-id|oplus,|oppo,|PRODUCT_(MODEL|DEVICE|NAME|BRAND)|TARGET_(PRODUCT|DEVICE)|ro\.product\.(model|device|name|brand)|CPH[0-9]{4}|P[A-Z0-9]{3,}' "$file" 2>/dev/null || true)"
+                  if [ -n "$matches" ]; then
+                    printf '\n--- %s ---\n%s\n' "$file" "$matches"
+                  fi
+                done
+            } > device-model-evidence.txt
+
+            # Keep the API request bounded; source evidence is still retained as an artifact.
+            evidence_bytes="$(wc -c < device-model-evidence.txt)"
+            if [ "$evidence_bytes" -gt 180000 ]; then
+              sed -n '1,3500p' device-model-evidence.txt > device-model-evidence.trimmed.txt
+              mv device-model-evidence.trimmed.txt device-model-evidence.txt
+            fi
+            test -s device-model-evidence.txt || {
+              echo "ERROR: No device identity evidence was found in the kernel checkout."
+              exit 1
+            }
+
+            prompt="$(cat <<'PROMPT'
+You are analyzing Linux/Android kernel source to identify exact OPPO/OPlus smartphone or tablet models supported by THIS source tree.
+
+Use only the supplied source evidence. Do not guess from the SoC name, do not list generic development boards, and do not invent retail names. A model is eligible only when the evidence explicitly ties that model or its device codename to this kernel source. If evidence only identifies a Qualcomm SoC or generic board, return no device for it.
+
+Return JSON only, with this exact shape:
+{
+  "devices": [
+    {
+      "model": "exact device model name as written in source",
+      "codename": "device codename if explicitly present, otherwise empty",
+      "evidence": "short exact identifying text copied from the supplied evidence"
+    }
+  ]
+}
+
+Include every distinct OPPO/OPlus phone/tablet model explicitly supported by the evidence. Exclude OnePlus and unrelated vendors. Do not include explanations outside JSON.
+PROMPT
+)"
+            prompt="$prompt
+
+SOURCE EVIDENCE:
+$(cat device-model-evidence.txt)"
+
+            echo "Asking Gemini (${GEMINI_MODEL}) to identify device models (temperature=0.1)..."
+            jq -n --arg prompt "$prompt" '{
+              contents: [{ role: "user", parts: [{ text: $prompt }] }],
+              generationConfig: {
+                temperature: 0.1,
+                topP: 0.8,
+                candidateCount: 1,
+                maxOutputTokens: 4096,
+                responseMimeType: "application/json"
+              }
+            }' > gemini-request.json
+
+            curl --fail --silent --show-error --retry 3 --retry-delay 2 \
+              -X POST "https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent" \
+              -H "Content-Type: application/json" \
+              -H "x-goog-api-key: ${GEMINI_API_KEY}" \
+              --data-binary @gemini-request.json \
+              -o gemini-response.json
+
+            gemini_text="$(jq -er '[.candidates[0].content.parts[]?.text // empty] | join("")' gemini-response.json)"
+            printf '%s\n' "$gemini_text" > gemini-devices.json
+            jq -e '.devices | type == "array"' gemini-devices.json >/dev/null
+
+            : > device-models.txt
+            while IFS= read -r item; do
+              model="$(jq -r '.model // empty' <<< "$item" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+              evidence_quote="$(jq -r '.evidence // empty' <<< "$item")"
+              [ -n "$model" ] || continue
+              [ -n "$evidence_quote" ] || {
+                echo "Rejected Gemini result without source evidence: $model"
+                continue
+              }
+
+              # Reject hallucinated model names: the exact model string must occur in kernel evidence.
+              if ! grep -Fqi -- "$model" device-model-evidence.txt; then
+                echo "Rejected unsupported Gemini model (not present in source evidence): $model"
+                continue
+              fi
+              if ! grep -Fqi -- "$evidence_quote" device-model-evidence.txt; then
+                echo "Rejected Gemini model with an unverified evidence quote: $model"
+                continue
+              fi
+              printf '%s\n' "$model" >> device-models.txt
+            done < <(jq -c '.devices[]?' gemini-devices.json)
+
+            sort -fu -o device-models.txt device-models.txt
+            if [ ! -s device-models.txt ]; then
+              echo "ERROR: Gemini found no verifiable OPPO/OPlus phone/tablet models."
+              echo "The kernel repository may not include its external vendor device-tree repository."
+              echo "Gemini output:"
+              cat gemini-devices.json
+              exit 1
+            fi
+
+            echo "Gemini-identified and source-verified device models:"
             cat device-models.txt
-          else
+                    else
             # Accept one model or a comma/semicolon/newline-separated model list.
             printf '%s\n' "$DEVICE_MODEL" |
               tr ',;' '\n' |
