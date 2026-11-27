@@ -220,7 +220,7 @@ jobs:
           - **Compiler:** Clang/LLVM (GitHub Actions)
 
           ## Important compatibility notice
-          This release is a compile-check artifact from the selected shared kernel source. When `device_model=all`, device-tree compatible identifiers are discovered automatically, but the module is **not separately built for each device** and compatibility is not verified. Do not load it unless the exact device kernel configuration, headers, symbol versions and toolchain match.
+          This release is a compile-check artifact from the selected shared kernel source. When `device_model=all`, each distinct OPPO/OPlus device model declared in a device-tree source gets its own release, but the module binary is compiled only once from the selected kernel branch and is **not separately built or validated for each device**. Do not load it unless the exact device kernel configuration, headers, symbol versions and toolchain match.
 
           ## Assets
           `tango32.ko`, build metadata/configuration, and a bundle archive.
