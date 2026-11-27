@@ -360,6 +360,8 @@ jobs:
             cp tango32.ko "$module_stage/tango32.ko"
             cp kernel-release.txt "$module_stage/kernel.release"
             cp ksu-module/customize.sh ksu-module/service.sh ksu-module/action.sh ksu-module/uninstall.sh "$module_stage/"
+            mkdir -p "$module_stage/system/bin"
+            cp ksu-module/system/bin/tango32-install-apk "$module_stage/system/bin/"
             version_code="${GITHUB_RUN_NUMBER:-1}"
             version="0.1.${version_code}"
             {
