@@ -239,11 +239,11 @@ jobs:
           
           Include every distinct OPPO/OPlus phone/tablet model explicitly supported by the evidence. Exclude OnePlus and unrelated vendors. Do not include explanations outside JSON.
           PROMPT
-)"
+            )"
             prompt="$prompt
 
-SOURCE EVIDENCE:
-$(cat device-model-evidence.txt)"
+            SOURCE EVIDENCE:
+            $(cat device-model-evidence.txt)"
 
             echo "Asking Gemini (${GEMINI_MODEL}) to identify device models (temperature=0.1)..."
             jq -n --arg prompt "$prompt" '{
