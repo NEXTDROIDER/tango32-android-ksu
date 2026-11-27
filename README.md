@@ -51,6 +51,7 @@ tango32-<device>-<kernel-release>-<commit>
 ```
 
 Release assets:
+- `tango32-<device>-kernelsu.zip` — installable KernelSU module (recommended)
 - `tango32.ko` — compiled module
 - `build-info.txt` — source, commit, compiler and build details
 - `kernel-release.txt` — kernel release string
@@ -58,6 +59,15 @@ Release assets:
 - `tango32-build-bundle.tar.gz` — bundled files
 
 Browse **[Releases](../../releases)**.
+
+### Install the KernelSU module
+
+1. Download the device's `tango32-<device>-kernelsu.zip` from its GitHub Release.
+2. Open KernelSU Manager → **Modules** → **Install from storage** and select the ZIP.
+3. The installer checks ARM64 architecture and requires the phone's `uname -r` to exactly match the build's kernel release. If it differs, installation is stopped.
+4. Reboot. The module attempts to load automatically at boot. Open its **Action** button in KernelSU to view status and logs.
+
+The ZIP contains the module, installer checks, boot-time loader, status action and uninstall cleanup. A matching kernel release string is only a basic safety check; it does not prove that all kernel symbols/configuration match.
 
 ## Compatibility notes
 
