@@ -59,52 +59,63 @@ jobs:
           git clone --depth=1 --single-branch --branch "$KERNEL_BRANCH" "https://github.com/$KERNEL_REPO.git" kernel
           echo "Kernel commit: $(git -C kernel rev-parse HEAD)"
 
-      - name: Patch missing vendor Kconfig includes (compile-check only)
+      - name: Disable unavailable OPPO vendor Kconfig entries for compile-check
         run: |
           cd kernel
           python3 - <<'PY'
           from pathlib import Path
           root = Path.cwd()
+          # This is a compile-only generic config, so vendor-only menu includes
+          # that aren't present in the checkout are commented out.
+          files_to_check = [
+              root / "init/Kconfig",
+              root / "drivers/soc/Kconfig",
+              root / "mm/Kconfig",
+              root / "kernel/Kconfig.locks",
+              root / "drivers/power/Kconfig",
+              root / "drivers/android/Kconfig",
+              root / "drivers/input/Kconfig",
+              root / "drivers/input/touchscreen/Kconfig",
+              root / "kernel/oplus_cpu/Kconfig",
+          ]
           missing = []
           changed = []
-          for p in root.rglob("Kconfig*"):
+          for p in files_to_check:
               if not p.is_file():
                   continue
-              try:
-                  lines = p.read_text(errors="replace").splitlines()
-              except OSError:
-                  continue
-              new = []
+              original = p.read_text(errors="replace").splitlines()
+              output = []
               touched = False
-              for line in lines:
+              for line in original:
                   stripped = line.strip()
                   if stripped.startswith(("source ", "rsource ", "osource ", "orsource ")):
-                      # Extract quoted filename without regex.
-                      q = stripped.find('"')
-                      q2 = stripped.rfind('"')
-                      if q >= 0 and q2 > q:
-                          target = stripped[q+1:q2]
-                          if not target.startswith("$") and "*" not in target:
-                              # Vendor Kconfig references are rooted in the kernel tree.
-                              if not (root / target).exists():
-                                  missing.append(f"{p.relative_to(root)} -> {target}")
-                                  new.append("# CI skipped absent Kconfig: " + stripped)
-                                  touched = True
-                                  continue
-                  new.append(line)
+                      q1, q2 = stripped.find('"'), stripped.rfind('"')
+                      if q1 != -1 and q2 > q1:
+                          target = stripped[q1+1:q2]
+                          # Kconfig source paths are relative to kernel root.
+                          if not target.startswith("$") and not (root / target).is_file():
+                              missing.append(f"{p.relative_to(root)}: {target}")
+                              output.append("# CI compile-check: skipped missing vendor include: " + stripped)
+                              touched = True
+                              continue
+                  output.append(line)
               if touched:
-                  p.write_text("\n".join(new) + "\n")
+                  p.write_text("\n".join(output) + "\n")
                   changed.append(str(p.relative_to(root)))
           print("PATCHED FILES:", changed)
-          print("SKIPPED REFERENCES:", missing)
-          # Explicit fail if the known broken include survived.
+          print("MISSING INCLUDES COMMENTED:", missing)
+          # Validate active directives, not the comment text.
           init = root / "init/Kconfig"
+          active = []
           if init.exists():
-              text = init.read_text(errors="replace")
-              if 'source "kernel/oplus_cpu/sched/Kconfig"' in text:
-                  raise SystemExit("ERROR: missing OPPO Kconfig include was not patched")
+              for line in init.read_text(errors="replace").splitlines():
+                  s = line.strip()
+                  if s.startswith(("source ", "rsource ", "osource ", "orsource ")) and '"kernel/oplus_cpu/sched/Kconfig"' in s:
+                      active.append(line)
+          if active:
+              print("Still-active missing include:", active)
+              raise SystemExit(1)
           PY
-          echo "Verify the problematic line:"
           grep -n "oplus_cpu/sched/Kconfig" init/Kconfig || true
 
       - name: Configure ARM64 kernel for compile-check
