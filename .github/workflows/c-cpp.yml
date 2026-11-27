@@ -179,24 +179,41 @@ jobs:
             python3 - <<'PY' > device-models.txt
           import re
           from pathlib import Path
+
           root = Path("kernel")
           found = set()
-          # Device-tree compatibles identify products represented by this source tree.
-          for p in root.rglob("*"):
-              if not p.is_file() or p.suffix not in (".dts", ".dtsi"):
+          # OPPO kernels often use "oplus" instead of "oppo" in DT compatibles.
+          patterns = (
+              r"""["']([^"']*(?:oppo|oplus|oneplus)[^"']*)["']""",
+              r"""model\s*=\s*["']([^"']+)["']""",
+          )
+          for base in (root / "arch/arm64/boot/dts", root / "arch/arm/boot/dts"):
+              if not base.exists():
                   continue
-              try:
-                  text = p.read_text(errors="ignore")
-              except OSError:
-                  continue
-              for compatible in re.findall(r"""["']([^"']*oppo[^"']*)["']""", text, re.I):
-                  compatible = compatible.strip()
-                  if compatible and len(compatible) < 120:
-                      found.add(compatible)
-          for name in sorted(found):
-              print(name)
+              for p in base.rglob("*"):
+                  if not p.is_file() or p.suffix not in (".dts", ".dtsi"):
+                      continue
+                  try:
+                      data = p.read_text(errors="ignore")
+                  except OSError:
+                      continue
+                  # Ignore commented lines to reduce false positives.
+                  data = re.sub(r"/\*.*?\*/", "", data, flags=re.S)
+                  data = re.sub(r"(?m)//.*$", "", data)
+                  for pattern in patterns:
+                      for value in re.findall(pattern, data, re.I):
+                          value = value.strip()
+                          if value and len(value) < 120:
+                              found.add(value)
+          # If DT has no explicit model strings, identify the vendor DT directories/files.
+          if not found:
+              for p in (root / "arch/arm64/boot/dts").rglob("*"):
+                  if p.is_file() and any(token in str(p).lower() for token in ("oppo", "oplus")):
+                      found.add("OPPO/OPlus device-tree source: " + str(p.relative_to(root)))
+          for item in sorted(found):
+              print(item)
           PY
-            if [ ! -s device-models.txt ]; then
+          if [ ! -s device-models.txt ]; then
               echo "No OPPO compatible strings found in device tree; cannot expand 'all'."
               exit 1
             fi
