@@ -60,6 +60,16 @@ Release assets:
 
 Browse **[Releases](../../releases)**.
 
+### Is your phone missing from the releases?
+
+If your phone model is not listed in the Releases, please **[open a new Issue](../../issues/new/choose)**. Include:
+
+- Exact phone brand and model (for example, OPPO CPH2819).
+- Android version and kernel version (`uname -r`).
+- A link to the device's kernel source, if available.
+
+We can use this information to investigate support and add a suitable build when the required kernel source is available. Creating an Issue does not guarantee that the device is supported or that a compatible module can be built.
+
 ### Install the KernelSU module
 
 1. Download the device's `tango32-<device>-kernelsu.zip` from its GitHub Release.
