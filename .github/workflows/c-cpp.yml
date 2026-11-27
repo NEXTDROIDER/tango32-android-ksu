@@ -15,6 +15,11 @@ on:
         required: true
         default: oppo/sm6225_b_16.0
         type: string
+      expected_kernel_release:
+        description: Exact output of uname -r on the target device; mismatches stop the build before module packaging
+        required: true
+        default: 5.15.197-android13-8-o-01072-gdf6fcd9bb084
+        type: string
       device_model:
         description: One model, comma-separated model list, or "all" to detect models with Gemini API
         required: true
@@ -47,6 +52,7 @@ jobs:
         env:
           KERNEL_REPO: ${{ inputs.kernel_repo }}
           KERNEL_BRANCH: ${{ inputs.kernel_branch }}
+          EXPECTED_KERNEL_RELEASE: ${{ inputs.expected_kernel_release }}
           DEVICE_MODEL: ${{ inputs.device_model }}
           DELAY: ${{ inputs.delay_minutes }}
         shell: bash
@@ -54,6 +60,7 @@ jobs:
           set -euo pipefail
           [[ "$KERNEL_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "::error::Invalid kernel_repo. Use owner/name."; exit 1; }
           [[ -n "$KERNEL_BRANCH" ]] || { echo "::error::kernel_branch cannot be empty."; exit 1; }
+          [[ -n "$EXPECTED_KERNEL_RELEASE" ]] || { echo "::error::expected_kernel_release cannot be empty; set it to the exact output of uname -r."; exit 1; }
           [[ -n "$DEVICE_MODEL" ]] || { echo "::error::device_model cannot be empty."; exit 1; }
           [[ "$DELAY" =~ ^[0-9]+$ ]] && [ "$DELAY" -le 60 ] || { echo "::error::delay_minutes must be 0..60."; exit 1; }
 
@@ -142,6 +149,19 @@ jobs:
 
           make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 modules_prepare
           make ARCH=arm64 LLVM=1 CONFIG_FUNCTION_ALIGNMENT=0 kernelrelease > ../kernel-release.txt
+
+          ACTUAL_KERNEL_RELEASE="$(cat ../kernel-release.txt)"
+          EXPECTED_KERNEL_RELEASE="${{ inputs.expected_kernel_release }}"
+          echo "Expected device kernel: $EXPECTED_KERNEL_RELEASE"
+          echo "Kernel source release:  $ACTUAL_KERNEL_RELEASE"
+          if [ "$ACTUAL_KERNEL_RELEASE" != "$EXPECTED_KERNEL_RELEASE" ]; then
+            echo "::error::Kernel source does not match the target device."
+            echo "::error::Expected uname -r: $EXPECTED_KERNEL_RELEASE"
+            echo "::error::Built kernelrelease: $ACTUAL_KERNEL_RELEASE"
+            echo "::error::No tango32.ko or KernelSU ZIP will be published. Select the exact kernel source/branch for this device."
+            exit 1
+          fi
+
           cp .config ../kernel-config.txt
 
       - name: Build Tango32 module
@@ -156,6 +176,7 @@ jobs:
           {
             echo "Kernel repository: ${{ inputs.kernel_repo }}"
             echo "Kernel branch: ${{ inputs.kernel_branch }}"
+            echo "Expected device kernel release: ${{ inputs.expected_kernel_release }}"
             echo "Requested device: ${{ inputs.device_model }}"
             echo "Kernel commit:"
             git -C kernel rev-parse HEAD 2>/dev/null || true
