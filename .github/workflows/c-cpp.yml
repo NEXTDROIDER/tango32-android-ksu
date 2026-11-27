@@ -168,19 +168,35 @@ jobs:
             for base in kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts; do
               [ -d "$base" ] || continue
               while IFS= read -r -d '' file; do
-                compatible="$(grep -E '^[[:space:]]*compatible[[:space:]]*=' "$file" | head -n1 || true)"
-                printf '%s' "$compatible" | grep -Eiq 'oppo|oplus' || continue
-                printf '%s' "$compatible" | grep -Eiq 'oneplus|toradex|valve' && continue
-                model="$(grep -Eo '^[[:space:]]*model[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | head -n1 | sed -E 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"//; s/"$//')"
+                # Read complete compatible properties, including multiline values.
+                compatible="$(awk '
+                  /^[[:space:]]*compatible[[:space:]]*=/ { active=1 }
+                  active { printf "%s ", $0; if ($0 ~ /;/) active=0 }
+                ' "$file")"
+                model_line="$(grep -E '^[[:space:]]*model[[:space:]]*=' "$file" | sed -n '1p' || true)"
+                identity="$compatible $model_line"
+
+                # Only include device trees explicitly identifying OPPO/OPlus.
+                printf '%s' "$identity" | grep -Eiq 'oppo|oplus' || continue
+                printf '%s' "$identity" | grep -Eiq 'oneplus|toradex|valve' && continue
+
+                model="$(printf '%s\n' "$model_line" | sed -nE 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p')"
                 [ -n "$model" ] || model="$(basename "$file" .dts)"
                 printf '%s\n' "$model" >> device-models.txt
               done < <(find "$base" -type f -name '*.dts' -print0)
             done
+
             sort -u -o device-models.txt device-models.txt
             if [ ! -s device-models.txt ]; then
-              echo "No OPPO/OPlus device models found in DTS files"
+              echo "No OPPO/OPlus models were identified in DTS model/compatible properties."
+              echo "DTS files found:"
+              find kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts -type f -name '*.dts' -print 2>/dev/null | head -n 30 || true
+              echo "Sample model properties:"
+              grep -R -h -E '^[[:space:]]*model[[:space:]]*=' kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts 2>/dev/null | sed -n '1,30p' || true
               exit 1
             fi
+            echo "Detected OPPO/OPlus device models:"
+            cat device-models.txt
           else
             printf '%s\n' "$DEVICE_MODEL" > device-models.txt
           fi
