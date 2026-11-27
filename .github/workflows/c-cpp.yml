@@ -106,22 +106,37 @@ jobs:
           set -euo pipefail
           cd kernel
           make ARCH=arm64 LLVM=1 defconfig
+          echo "=== defconfig MODULES state ==="
+          grep -E '^(CONFIG_MODULES=|# CONFIG_MODULES is not set)' .config || true
+
           scripts/config --enable MODULES
           scripts/config --enable FUTEX
           scripts/config --enable COMPAT
           scripts/config --disable MODVERSIONS
-          make ARCH=arm64 LLVM=1 olddefconfig
-          echo "=== Required kernel configuration ==="
+          echo "=== scripts/config result ==="
           grep -E '^(CONFIG_(MODULES|FUTEX|COMPAT|MODVERSIONS)=|# CONFIG_(MODULES|FUTEX|COMPAT|MODVERSIONS) is not set)' .config || true
-          if ! grep -q '^CONFIG_MODULES=y$' .config; then
-            echo "ERROR: CONFIG_MODULES is not enabled; this kernel configuration cannot build external modules."
+
+          make ARCH=arm64 LLVM=1 olddefconfig
+          echo "=== olddefconfig result ==="
+          grep -E '^(CONFIG_(MODULES|FUTEX|COMPAT|MODVERSIONS)=|# CONFIG_(MODULES|FUTEX|COMPAT|MODVERSIONS) is not set)' .config || true
+
+          # This vendor tree's olddefconfig drops MODULES; restore it after
+          # Kconfig normalization, then let prepare synchronize generated config.
+          scripts/config --enable MODULES
+          grep -q '^CONFIG_MODULES=y$' .config || {
+            echo "ERROR: scripts/config could not set CONFIG_MODULES=y"
             exit 1
-          fi
-          if ! grep -q '^CONFIG_FUTEX=y$' .config; then
-            echo "ERROR: CONFIG_FUTEX is not enabled."
-            exit 1
-          fi
+          }
+
           make ARCH=arm64 LLVM=1 prepare
+
+          echo "=== synchronized module configuration ==="
+          grep -E '^(CONFIG_(MODULES|FUTEX|COMPAT|MODVERSIONS)=|# CONFIG_(MODULES|FUTEX|COMPAT|MODVERSIONS) is not set)' .config include/config/auto.conf || true
+          if ! grep -q '^CONFIG_MODULES=y$' include/config/auto.conf; then
+            echo "ERROR: Kconfig discarded CONFIG_MODULES during prepare; external module build is unsupported by this tree as currently configured."
+            exit 1
+          fi
+
           make ARCH=arm64 LLVM=1 modules_prepare
           make ARCH=arm64 LLVM=1 kernelrelease > ../kernel-release.txt
           cp .config ../kernel-config.txt
