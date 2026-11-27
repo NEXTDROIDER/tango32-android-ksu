@@ -59,52 +59,53 @@ jobs:
           git clone --depth=1 --single-branch --branch "$KERNEL_BRANCH" "https://github.com/$KERNEL_REPO.git" kernel
           echo "Kernel commit: $(git -C kernel rev-parse HEAD)"
 
-      - name: Disable missing OPPO vendor Kconfig includes (compile-check only)
+      - name: Patch missing vendor Kconfig includes (compile-check only)
         run: |
           cd kernel
           python3 - <<'PY'
           from pathlib import Path
-          import re
-
           root = Path.cwd()
-          # Kconfig "source" paths are relative to the kernel tree.
-          # Remove only source entries whose referenced file is absent.
-          changed_files = []
           missing = []
-          for kconfig in root.rglob("Kconfig"):
+          changed = []
+          for p in root.rglob("Kconfig*"):
+              if not p.is_file():
+                  continue
               try:
-                  lines = kconfig.read_text(errors="replace").splitlines()
+                  lines = p.read_text(errors="replace").splitlines()
               except OSError:
                   continue
-              out = []
-              changed = False
+              new = []
+              touched = False
               for line in lines:
-                  m = re.match(r'^(\\s*)(source|rsource|osource|orsource)\\s+"([^"]+)"\\s*(?:#.*)?$', line)
-                  if not m:
-                      out.append(line)
-                      continue
-                  target = m.group(3)
-                  if "$" in target or "*" in target:
-                      out.append(line)
-                      continue
-                  candidate = root / target
-                  if not candidate.exists():
-                      out.append("# CI compile-check skipped missing Kconfig: " + line.strip())
-                      missing.append(f"{kconfig.relative_to(root)}: {target}")
-                      changed = True
-                  else:
-                      out.append(line)
-              if changed:
-                  kconfig.write_text("\\n".join(out) + "\\n")
-                  changed_files.append(str(kconfig.relative_to(root)))
-          print("Changed Kconfig files:", changed_files)
-          print("Skipped missing includes:", missing)
-          if (root / "init/Kconfig").exists():
-              print("Remaining OPPO include references:")
-              for n, line in enumerate((root / "init/Kconfig").read_text(errors="replace").splitlines(), 1):
-                  if "oplus_cpu" in line:
-                      print(f"{n}: {line}")
+                  stripped = line.strip()
+                  if stripped.startswith(("source ", "rsource ", "osource ", "orsource ")):
+                      # Extract quoted filename without regex.
+                      q = stripped.find('"')
+                      q2 = stripped.rfind('"')
+                      if q >= 0 and q2 > q:
+                          target = stripped[q+1:q2]
+                          if not target.startswith("$") and "*" not in target:
+                              # Vendor Kconfig references are rooted in the kernel tree.
+                              if not (root / target).exists():
+                                  missing.append(f"{p.relative_to(root)} -> {target}")
+                                  new.append("# CI skipped absent Kconfig: " + stripped)
+                                  touched = True
+                                  continue
+                  new.append(line)
+              if touched:
+                  p.write_text("\n".join(new) + "\n")
+                  changed.append(str(p.relative_to(root)))
+          print("PATCHED FILES:", changed)
+          print("SKIPPED REFERENCES:", missing)
+          # Explicit fail if the known broken include survived.
+          init = root / "init/Kconfig"
+          if init.exists():
+              text = init.read_text(errors="replace")
+              if 'source "kernel/oplus_cpu/sched/Kconfig"' in text:
+                  raise SystemExit("ERROR: missing OPPO Kconfig include was not patched")
           PY
+          echo "Verify the problematic line:"
+          grep -n "oplus_cpu/sched/Kconfig" init/Kconfig || true
 
       - name: Configure ARM64 kernel for compile-check
         run: |
