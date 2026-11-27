@@ -72,7 +72,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex build-essential git libssl-dev libelf-dev dwarves perl make clang lld llvm jq curl
+          sudo apt-get install -y bc bison flex build-essential git libssl-dev libelf-dev dwarves perl make clang lld llvm jq curl zip
 
       - name: Clone selected kernel source
         env:
@@ -329,6 +329,28 @@ jobs:
               continue
             fi
 
+            # Build a flashable KernelSU ZIP for this model. The module is built once
+            # against this kernel source; the package installer rejects a different uname -r.
+            module_stage="ksu-stage"
+            rm -rf "$module_stage"
+            mkdir -p "$module_stage"
+            cp tango32.ko "$module_stage/tango32.ko"
+            cp kernel-release.txt "$module_stage/kernel.release"
+            cp ksu-module/customize.sh ksu-module/service.sh ksu-module/action.sh ksu-module/uninstall.sh "$module_stage/"
+            version_code="${GITHUB_RUN_NUMBER:-1}"
+            version="0.1.${version_code}"
+            {
+              echo "id=tango32"
+              echo "name=Tango32 - $model"
+              echo "version=$version"
+              echo "versionCode=$version_code"
+              echo "author=NEXTDROIDER"
+              echo "description=ARM32 compatibility module; built for $KERNEL_RELEASE"
+            } > "$module_stage/module.prop"
+            module_zip="release-assets/tango32-${model_slug}-kernelsu.zip"
+            (cd "$module_stage" && zip -qr "../$module_zip" .)
+            echo "Created KernelSU package: $module_zip"
+
             notes="$(cat <<EOF
           ## Build details
           - Device model: $model
@@ -345,7 +367,7 @@ jobs:
           tango32.ko, kernel configuration, build information and bundle archive.
           EOF
           )"
-            gh release create "$tag" release-assets/* --title "$title" --notes "$notes"
+            gh release create "$tag" "$module_zip" release-assets/tango32.ko release-assets/build-info.txt release-assets/kernel-release.txt release-assets/kernel-config.txt release-assets/tango32-build-bundle.tar.gz --title "$title" --notes "$notes"
             echo "Published: $tag"
           done < device-models.txt
 
