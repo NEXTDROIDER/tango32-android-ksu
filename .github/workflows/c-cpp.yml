@@ -64,7 +64,8 @@ jobs:
           git clone --depth=1 --single-branch --branch "$KERNEL_BRANCH" "https://github.com/$KERNEL_REPO.git" kernel
           echo "Kernel commit: $(git -C kernel rev-parse HEAD)"
 
-      - name: Disable unavailable vendor Kconfig includes (Bash only)
+      - name: Disable unavailable vendor Kconfig includes (POSIX shell)
+        shell: bash
         run: |
           set -euo pipefail
           cd kernel
@@ -72,18 +73,22 @@ jobs:
             [ -f "$file" ] || continue
             tmp="$(mktemp)"
             while IFS= read -r line || [ -n "$line" ]; do
-              trimmed="$(printf '%s' "$line" | sed -E 's/^[[:space:]]+//')"
-              directive="$(printf '%s' "$trimmed" | cut -d ' ' -f1)"
-              case "$directive" in
-                source|rsource|osource|orsource)
+              trimmed="$(printf '%s' "$line" | sed 's/^[[:space:]]*//')"
+              case "$trimmed" in
+                source\ *|rsource\ *|osource\ *|orsource\ *)
                   target="$(printf '%s' "$trimmed" | sed -n 's/^[^"]*"\([^"]*\)".*/\1/p')"
-                  if [ -n "$target" ] && case "$target" in *'$'*) false ;; *) true ;; esac && [ ! -f "$target" ]; then
-                    printf '# CI compile-check skipped missing include: %s\n' "$line" >> "$tmp"
-                    continue
-                  fi
+                  case "$target" in
+                    *'$'*) ;;
+                    *)
+                      if [ -n "$target" ] && [ ! -f "$target" ]; then
+                        printf '# CI compile-check skipped missing include: %s\\n' "$line" >> "$tmp"
+                        continue
+                      fi
+                      ;;
+                  esac
                   ;;
               esac
-              printf '%s\n' "$line" >> "$tmp"
+              printf '%s\\n' "$line" >> "$tmp"
             done < "$file"
             if ! cmp -s "$file" "$tmp"; then
               cat "$tmp" > "$file"
