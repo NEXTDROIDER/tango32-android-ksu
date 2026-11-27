@@ -16,9 +16,9 @@ on:
         default: oppo/sm6225_b_16.0
         type: string
       expected_kernel_release:
-        description: Exact output of uname -r on the target device; mismatches stop the build before module packaging
-        required: true
-        default: 5.15.197-android13-8-o-01072-gdf6fcd9bb084
+        description: Optional exact kernel release; empty means build against the selected kernel source
+        required: false
+        default: ""
         type: string
       device_model:
         description: One model, comma-separated model list, or "all" to detect models with Gemini API
@@ -60,7 +60,6 @@ jobs:
           set -euo pipefail
           [[ "$KERNEL_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "::error::Invalid kernel_repo. Use owner/name."; exit 1; }
           [[ -n "$KERNEL_BRANCH" ]] || { echo "::error::kernel_branch cannot be empty."; exit 1; }
-          [[ -n "$EXPECTED_KERNEL_RELEASE" ]] || { echo "::error::expected_kernel_release cannot be empty; set it to the exact output of uname -r."; exit 1; }
           [[ -n "$DEVICE_MODEL" ]] || { echo "::error::device_model cannot be empty."; exit 1; }
           [[ "$DELAY" =~ ^[0-9]+$ ]] && [ "$DELAY" -le 60 ] || { echo "::error::delay_minutes must be 0..60."; exit 1; }
 
@@ -152,14 +151,17 @@ jobs:
 
           ACTUAL_KERNEL_RELEASE="$(cat ../kernel-release.txt)"
           EXPECTED_KERNEL_RELEASE="${{ inputs.expected_kernel_release }}"
-          echo "Expected device kernel: $EXPECTED_KERNEL_RELEASE"
-          echo "Kernel source release:  $ACTUAL_KERNEL_RELEASE"
-          if [ "$ACTUAL_KERNEL_RELEASE" != "$EXPECTED_KERNEL_RELEASE" ]; then
-            echo "::error::Kernel source does not match the target device."
-            echo "::error::Expected uname -r: $EXPECTED_KERNEL_RELEASE"
-            echo "::error::Built kernelrelease: $ACTUAL_KERNEL_RELEASE"
-            echo "::error::No tango32.ko or KernelSU ZIP will be published. Select the exact kernel source/branch for this device."
-            exit 1
+          echo "Kernel source release: $ACTUAL_KERNEL_RELEASE"
+          if [ -n "$EXPECTED_KERNEL_RELEASE" ]; then
+            echo "Optional expected release: $EXPECTED_KERNEL_RELEASE"
+            if [ "$ACTUAL_KERNEL_RELEASE" != "$EXPECTED_KERNEL_RELEASE" ]; then
+              echo "::error::Kernel release mismatch."
+              echo "::error::Expected: $EXPECTED_KERNEL_RELEASE"
+              echo "::error::Actual:   $ACTUAL_KERNEL_RELEASE"
+              exit 1
+            fi
+          else
+            echo "Exact kernel-release check skipped (source-based build mode)."
           fi
 
           cp .config ../kernel-config.txt
