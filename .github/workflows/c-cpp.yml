@@ -59,39 +59,51 @@ jobs:
           git clone --depth=1 --single-branch --branch "$KERNEL_BRANCH" "https://github.com/$KERNEL_REPO.git" kernel
           echo "Kernel commit: $(git -C kernel rev-parse HEAD)"
 
-      - name: Patch absent vendor Kconfig source entries (compile-check only)
+      - name: Disable missing OPPO vendor Kconfig includes (compile-check only)
         run: |
           cd kernel
           python3 - <<'PY'
           from pathlib import Path
           import re
+
           root = Path.cwd()
+          # Kconfig "source" paths are relative to the kernel tree.
+          # Remove only source entries whose referenced file is absent.
+          changed_files = []
           missing = []
-          for path in root.rglob("Kconfig*"):
-              if not path.is_file():
-                  continue
+          for kconfig in root.rglob("Kconfig"):
               try:
-                  original = path.read_text(errors="replace")
+                  lines = kconfig.read_text(errors="replace").splitlines()
               except OSError:
                   continue
-              lines = original.splitlines()
+              out = []
               changed = False
-              for i, line in enumerate(lines):
-                  match = re.match(r'^\s*(source|rsource|osource|orsource)\s+"([^"]+)"\s*$', line)
-                  if not match:
+              for line in lines:
+                  m = re.match(r'^(\\s*)(source|rsource|osource|orsource)\\s+"([^"]+)"\\s*(?:#.*)?$', line)
+                  if not m:
+                      out.append(line)
                       continue
-                  target = match.group(2)
+                  target = m.group(3)
                   if "$" in target or "*" in target:
+                      out.append(line)
                       continue
-                  candidates = [root / target, path.parent / target]
-                  if not any(candidate.exists() for candidate in candidates):
-                      lines[i] = "# compile-check: skipped absent vendor Kconfig: " + line.strip()
-                      missing.append(f"{path.relative_to(root)} -> {target}")
+                  candidate = root / target
+                  if not candidate.exists():
+                      out.append("# CI compile-check skipped missing Kconfig: " + line.strip())
+                      missing.append(f"{kconfig.relative_to(root)}: {target}")
                       changed = True
+                  else:
+                      out.append(line)
               if changed:
-                  path.write_text("\n".join(lines) + "\n")
-          print("Missing vendor Kconfig entries skipped:")
-          print("\n".join(missing) if missing else "none")
+                  kconfig.write_text("\\n".join(out) + "\\n")
+                  changed_files.append(str(kconfig.relative_to(root)))
+          print("Changed Kconfig files:", changed_files)
+          print("Skipped missing includes:", missing)
+          if (root / "init/Kconfig").exists():
+              print("Remaining OPPO include references:")
+              for n, line in enumerate((root / "init/Kconfig").read_text(errors="replace").splitlines(), 1):
+                  if "oplus_cpu" in line:
+                      print(f"{n}: {line}")
           PY
 
       - name: Configure ARM64 kernel for compile-check
