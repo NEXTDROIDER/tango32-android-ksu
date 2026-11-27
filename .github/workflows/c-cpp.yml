@@ -159,7 +159,7 @@ jobs:
           } > build-info.txt
           cp kernel/.config kernel-config.txt 2>/dev/null || true
 
-      - name: Create device-specific release on new kernel commit
+      - name: Create releases for selected device(s)
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -168,42 +168,76 @@ jobs:
           KERNEL_BRANCH: ${{ inputs.kernel_branch }}
         run: |
           set -euo pipefail
-          if [ -z "${DEVICE_MODEL// }" ]; then
-            echo "Device model must not be empty"
-            exit 1
-          fi
           KERNEL_COMMIT="$(git -C kernel rev-parse HEAD)"
           KERNEL_SHORT="${KERNEL_COMMIT:0:8}"
           KERNEL_RELEASE="$(cat kernel-release.txt)"
-          MODEL_SLUG="$(printf '%s' "$DEVICE_MODEL" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-|-$//g')"
-          RELEASE_SLUG="$(printf '%s' "$KERNEL_RELEASE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.+_-]+/-/g')"
-          TAG="tango32-${MODEL_SLUG}-${RELEASE_SLUG}-${KERNEL_SHORT}"
-          TITLE="Tango32 · ${DEVICE_MODEL} · ${KERNEL_RELEASE} (${KERNEL_SHORT})"
-
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release already exists for this device/kernel commit: $TAG"
-            exit 0
-          fi
-
           mkdir -p release-assets
           cp tango32.ko build-info.txt kernel-release.txt kernel-config.txt release-assets/
           tar -czf release-assets/tango32-build-bundle.tar.gz -C release-assets tango32.ko build-info.txt kernel-release.txt kernel-config.txt
 
-          NOTES="$(cat <<EOF
+          if [ "$DEVICE_MODEL" = "all" ]; then
+            python3 - <<'PY' > device-models.txt
+          import re
+          from pathlib import Path
+          root = Path("kernel")
+          found = set()
+          # Device-tree compatibles identify products represented by this source tree.
+          for p in root.rglob("*"):
+              if not p.is_file() or p.suffix not in (".dts", ".dtsi"):
+                  continue
+              try:
+                  text = p.read_text(errors="ignore")
+              except OSError:
+                  continue
+              for compatible in re.findall(r'["\\']([^"\\']*oppo[^"\\']*)["\\']', text, re.I):
+                  compatible = compatible.strip()
+                  if compatible and len(compatible) < 120:
+                      found.add(compatible)
+          for name in sorted(found):
+              print(name)
+          PY
+            if [ ! -s device-models.txt ]; then
+              echo "No OPPO compatible strings found in device tree; cannot expand 'all'."
+              exit 1
+            fi
+            echo "OPPO device identifiers discovered:"
+            cat device-models.txt
+          else
+            printf '%s\\n' "$DEVICE_MODEL" > device-models.txt
+          fi
+
+          while IFS= read -r MODEL || [ -n "$MODEL" ]; do
+            [ -n "$MODEL" ] || continue
+            MODEL_SLUG="$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-|-$//g')"
+            RELEASE_SLUG="$(printf '%s' "$KERNEL_RELEASE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.+_-]+/-/g')"
+            TAG="tango32-${MODEL_SLUG}-${RELEASE_SLUG}-${KERNEL_SHORT}"
+            TITLE="Tango32 · ${MODEL} · ${KERNEL_RELEASE} (${KERNEL_SHORT})"
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "Release already exists, skipping: $TAG"
+              continue
+            fi
+            NOTES="$(cat <<EOF
           ## Build details
-          - **Device model:** $DEVICE_MODEL
+          - **Device identifier/model:** $MODEL
           - **Kernel source:** $KERNEL_REPO
           - **Branch:** $KERNEL_BRANCH
           - **Kernel commit:** $KERNEL_COMMIT
           - **Kernel release:** $KERNEL_RELEASE
           - **Compiler:** Clang/LLVM (GitHub Actions)
 
-          > This is a compile-check artifact. It is not guaranteed to be compatible/loadable on the device unless built with the exact matching kernel configuration, generated headers, symbol versions and toolchain.
+          ## Important compatibility notice
+          This release is a compile-check artifact from the selected shared kernel source. When `device_model=all`, device-tree compatible identifiers are discovered automatically, but the module is **not separately built for each device** and compatibility is not verified. Do not load it unless the exact device kernel configuration, headers, symbol versions and toolchain match.
+
+          ## Assets
+          `tango32.ko`, build metadata/configuration, and a bundle archive.
           EOF
           )"
-          gh release create "$TAG" release-assets/* --title "$TITLE" --notes "$NOTES"
-          echo "Created release: $TAG"
+            gh release create "$TAG" release-assets/* --title "$TITLE" --notes "$NOTES"
+            echo "Published release: $TAG"
+          done < device-models.txt
 
+          echo "Model identifiers:" >> build-info.txt
+          cat device-models.txt >> build-info.txt
       - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
