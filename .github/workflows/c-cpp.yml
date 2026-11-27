@@ -238,7 +238,7 @@ jobs:
             }
 
             Include every distinct OPPO/OPlus phone/tablet model explicitly supported by the evidence. Exclude OnePlus and unrelated vendors. Do not include explanations outside JSON.
-            PROMPT
+          PROMPT
             printf '\n\nSOURCE EVIDENCE:\n' >> gemini-prompt.txt
             cat device-model-evidence.txt >> gemini-prompt.txt
 
