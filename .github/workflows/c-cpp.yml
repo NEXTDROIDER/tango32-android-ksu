@@ -14,7 +14,7 @@ on:
         default: oppo/sm6225_b_16.0
         type: string
       device_model:
-        description: Device model, or "all" to detect OPPO/OPlus boards
+        description: One model, comma-separated model list, or "all" to detect OPPO/OPlus device trees
         required: true
         default: OPPO CPH2819
         type: string
@@ -183,12 +183,21 @@ jobs:
                 model="$(printf '%s\n' "$model_line" | sed -nE 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p')"
                 [ -n "$model" ] || model="$(basename "$file" .dts)"
                 printf '%s\n' "$model" >> device-models.txt
-              done < <(find "$base" -type f -name '*.dts' -print0)
+              done < <(find -L "$base" -type f -name '*.dts' -print0)
             done
 
             sort -u -o device-models.txt device-models.txt
             if [ ! -s device-models.txt ]; then
-              echo "No OPPO/OPlus models were identified in DTS model/compatible properties."
+              echo "ERROR: No OPPO/OPlus device models were found."
+              echo "This kernel repository keeps its vendor device tree outside the checkout:"
+              if [ -L kernel/arch/arm64/boot/dts/vendor ]; then
+                echo "  arch/arm64/boot/dts/vendor -> $(readlink kernel/arch/arm64/boot/dts/vendor)"
+                if [ ! -e kernel/arch/arm64/boot/dts/vendor ]; then
+                  echo "  The symlink target is missing; the external Qualcomm device-tree repository was not cloned."
+                fi
+              fi
+              echo "Automatic per-device detection requires that external device-tree source."
+              echo "For now, rerun with device_model set to a comma-separated list of exact model names."
               echo "DTS files found:"
               find kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts -type f -name '*.dts' -print 2>/dev/null | head -n 30 || true
               echo "Sample model properties:"
@@ -198,7 +207,12 @@ jobs:
             echo "Detected OPPO/OPlus device models:"
             cat device-models.txt
           else
-            printf '%s\n' "$DEVICE_MODEL" > device-models.txt
+            # Accept one model or a comma/semicolon/newline-separated model list.
+            printf '%s\n' "$DEVICE_MODEL" |
+              tr ',;' '\n' |
+              sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^[[:space:]]*$/d' |
+              sort -u > device-models.txt
+            test -s device-models.txt
           fi
 
           while IFS= read -r model || [ -n "$model" ]; do
