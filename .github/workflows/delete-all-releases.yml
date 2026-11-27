@@ -1,0 +1,44 @@
+name: Delete all releases
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type DELETE ALL RELEASES to confirm
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  delete-releases:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify confirmation
+        run: |
+          if [ "${{ inputs.confirmation }}" != "DELETE ALL RELEASES" ]; then
+            echo "Confirmation text did not match. Nothing was deleted."
+            exit 1
+          fi
+
+      - name: Delete every GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mapfile -t RELEASE_TAGS < <(gh release list --repo "$REPO" --limit 1000 --json tagName --jq '.[].tagName')
+
+          if [ "${#RELEASE_TAGS[@]}" -eq 0 ]; then
+            echo "No releases found."
+            exit 0
+          fi
+
+          echo "Found ${#RELEASE_TAGS[@]} releases."
+          for TAG in "${RELEASE_TAGS[@]}"; do
+            echo "Deleting release: $TAG"
+            gh release delete "$TAG" --repo "$REPO" --yes
+          done
+
+          echo "All releases deleted. Git tags were not deleted."
