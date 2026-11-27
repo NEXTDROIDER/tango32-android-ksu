@@ -1,0 +1,18 @@
+#!/system/bin/sh
+# Install APKs while bypassing Android's low-target-SDK block.
+# Usage: su -c tango32-install-apk /sdcard/Download/app.apk
+
+APK="$1"
+if [ -z "$APK" ] || [ ! -f "$APK" ]; then
+  echo "Usage: su -c tango32-install-apk /path/to/app.apk" >&2
+  exit 2
+fi
+
+TMP="/data/local/tmp/tango32-install-$$.apk"
+trap 'rm -f "$TMP"' EXIT
+
+cp "$APK" "$TMP" || exit 1
+chmod 0644 "$TMP"
+restorecon "$TMP" 2>/dev/null || true
+
+pm install --bypass-low-target-sdk-block -r "$TMP"
