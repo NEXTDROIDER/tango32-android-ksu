@@ -348,8 +348,8 @@ jobs:
             tag="tango32-${model_slug}-${release_slug}-${KERNEL_SHORT}"
             title="Tango32 - ${model} - ${KERNEL_RELEASE}"
             if gh release view "$tag" >/dev/null 2>&1; then
-              echo "Release already exists: $tag"
-              continue
+              echo "Release already exists; deleting it before publishing the new build: $tag"
+              gh release delete "$tag" --yes --cleanup-tag
             fi
 
             # Build a flashable KernelSU ZIP for this model. The module is built once
