@@ -1,5 +1,7 @@
 name: Tango32 ARM64 kernel module build
 
+run-name: "Tango32 | ${{ inputs.device_model || 'manual' }} | ${{ inputs.kernel_branch || 'default' }}"
+
 on:
   workflow_dispatch:
     inputs:
@@ -27,6 +29,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: tango32-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -34,6 +40,22 @@ jobs:
     steps:
       - name: Checkout Tango32
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Validate workflow inputs
+        env:
+          KERNEL_REPO: ${{ inputs.kernel_repo }}
+          KERNEL_BRANCH: ${{ inputs.kernel_branch }}
+          DEVICE_MODEL: ${{ inputs.device_model }}
+          DELAY: ${{ inputs.delay_minutes }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$KERNEL_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "::error::Invalid kernel_repo. Use owner/name."; exit 1; }
+          [[ -n "$KERNEL_BRANCH" ]] || { echo "::error::kernel_branch cannot be empty."; exit 1; }
+          [[ -n "$DEVICE_MODEL" ]] || { echo "::error::device_model cannot be empty."; exit 1; }
+          [[ "$DELAY" =~ ^[0-9]+$ ]] && [ "$DELAY" -le 60 ] || { echo "::error::delay_minutes must be 0..60."; exit 1; }
 
       - name: Optional delay
         env:
@@ -162,8 +184,6 @@ jobs:
           KERNEL_SHORT="${KERNEL_COMMIT:0:8}"
           KERNEL_RELEASE="$(cat kernel-release.txt)"
           mkdir -p release-assets
-          cp tango32.ko build-info.txt kernel-release.txt kernel-config.txt release-assets/
-          tar -czf release-assets/tango32-build-bundle.tar.gz -C release-assets tango32.ko build-info.txt kernel-release.txt kernel-config.txt
 
           if [ "$DEVICE_MODEL" = "all" ]; then
             if [ -z "${GEMINI_API_KEY:-}" ]; then
@@ -181,19 +201,19 @@ jobs:
               find kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts -type l -printf '%p -> %l\n' 2>/dev/null || true
               echo
               echo "=== Device identity declarations ==="
-              find -L kernel -type f \( -name '*.dts' -o -name '*.dtsi' -o -name '*defconfig' -o -name '*.mk' -o -name '*.bp' \) -size -2M -print0 |
+              find -L kernel -type d \( -name .git -o -name out -o -name build \) -prune -o -type f \( -name '*.dts' -o -name '*.dtsi' -o -name '*defconfig' -o -name '*.mk' -o -name '*.bp' -o -name '*.product' -o -name '*.prop' -o -name '*.json' -o -name '*.xml' -o -name '*.sh' -o -name 'AndroidProducts.mk' \) -size -2M -print0 |
                 while IFS= read -r -d '' file; do
-                  matches="$(grep -nI -E '^[[:space:]]*(model|compatible)[[:space:]]*=|qcom,board-id|qcom,msm-id|oplus,|oppo,|PRODUCT_(MODEL|DEVICE|NAME|BRAND)|TARGET_(PRODUCT|DEVICE)|ro\.product\.(model|device|name|brand)|CPH[0-9]{4}|P[A-Z0-9]{3,}' "$file" 2>/dev/null || true)"
+                  matches="$(grep -nI -E '^[[:space:]]*(model|compatible)[[:space:]]*=|qcom,board-id|qcom,msm-id|oplus[,._-]|oppo[,._-]|PRODUCT_(MODEL|DEVICE|NAME|BRAND)|TARGET_(PRODUCT|DEVICE)|ro\.product\.(model|device|name|brand)|CPH[0-9]{4}|P[A-Z0-9]{3,}|PRODUCT_PACKAGES|PRODUCT_MAKEFILES' "$file" 2>/dev/null || true)"
                   if [ -n "$matches" ]; then
                     printf '\n--- %s ---\n%s\n' "$file" "$matches"
                   fi
                 done
             } > device-model-evidence.txt
 
-            # Keep the API request bounded; source evidence is still retained as an artifact.
+            # Keep the API request bounded without depending on Python or external parsers.
             evidence_bytes="$(wc -c < device-model-evidence.txt)"
             if [ "$evidence_bytes" -gt 180000 ]; then
-              sed -n '1,3500p' device-model-evidence.txt > device-model-evidence.trimmed.txt
+              { sed -n '1,12p' device-model-evidence.txt; tail -c 179000 device-model-evidence.txt; } > device-model-evidence.trimmed.txt
               mv device-model-evidence.trimmed.txt device-model-evidence.txt
             fi
             test -s device-model-evidence.txt || {
@@ -290,6 +310,17 @@ $(cat device-model-evidence.txt)"
             test -s device-models.txt
           fi
 
+          {
+            echo
+            echo "Selected device models:"
+            cat device-models.txt
+            echo "Model detection mode: $([ "$DEVICE_MODEL" = "all" ] && echo Gemini || echo manual)"
+          } >> build-info.txt
+
+          cp tango32.ko build-info.txt kernel-release.txt kernel-config.txt release-assets/
+          [ ! -f gemini-devices.json ] || cp gemini-devices.json device-model-evidence.txt release-assets/
+          tar -czf release-assets/tango32-build-bundle.tar.gz -C release-assets tango32.ko build-info.txt kernel-release.txt kernel-config.txt
+
           while IFS= read -r model || [ -n "$model" ]; do
             [ -n "$model" ] || continue
             model_slug="$(printf '%s' "$model" | sed -E 's/[^A-Za-z0-9]+/-/g; s/^-|-$//g' | tr '[:upper:]' '[:lower:]')"
@@ -310,7 +341,8 @@ $(cat device-model-evidence.txt)"
           - Kernel release: $KERNEL_RELEASE
 
           ## Compatibility
-          Device model was detected from the kernel device-tree source. This module was compiled once for the selected kernel branch, not separately for each listed model. Only load it on a kernel with matching configuration, headers, symbols and toolchain.
+          Model selection: $([ "$DEVICE_MODEL" = "all" ] && echo "Gemini analysis with source-evidence checks" || echo "manual workflow input").
+          The module was compiled once for the selected kernel branch, not separately for each listed model. A matching model name does not prove binary compatibility; load only on a kernel with matching release, configuration, symbols and toolchain.
 
           ## Assets
           tango32.ko, kernel configuration, build information and bundle archive.
@@ -319,11 +351,6 @@ $(cat device-model-evidence.txt)"
             gh release create "$tag" release-assets/* --title "$title" --notes "$notes"
             echo "Published: $tag"
           done < device-models.txt
-
-          {
-            echo "Detected device models:"
-            cat device-models.txt
-          } >> build-info.txt
 
       - name: Upload build artifacts
         if: always()
