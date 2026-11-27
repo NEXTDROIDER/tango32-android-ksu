@@ -16,8 +16,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Verify confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
         run: |
-          if [ "${{ inputs.confirmation }}" != "DELETE ALL RELEASES" ]; then
+          set -euo pipefail
+          if [[ "$CONFIRMATION" != "DELETE ALL RELEASES" ]]; then
             echo "Confirmation text did not match. Nothing was deleted."
             exit 1
           fi
