@@ -181,7 +181,7 @@ jobs:
               find kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts -type l -printf '%p -> %l\n' 2>/dev/null || true
               echo
               echo "=== Device identity declarations ==="
-              find kernel -type f \\( -name '*.dts' -o -name '*.dtsi' -o -name '*defconfig' -o -name '*.mk' -o -name '*.bp' -o -name '*. prop' \\) -size -2M -print0 |
+              find -L kernel -type f \( -name '*.dts' -o -name '*.dtsi' -o -name '*defconfig' -o -name '*.mk' -o -name '*.bp' \) -size -2M -print0 |
                 while IFS= read -r -d '' file; do
                   matches="$(grep -nI -E '^[[:space:]]*(model|compatible)[[:space:]]*=|qcom,board-id|qcom,msm-id|oplus,|oppo,|PRODUCT_(MODEL|DEVICE|NAME|BRAND)|TARGET_(PRODUCT|DEVICE)|ro\.product\.(model|device|name|brand)|CPH[0-9]{4}|P[A-Z0-9]{3,}' "$file" 2>/dev/null || true)"
                   if [ -n "$matches" ]; then
@@ -336,5 +336,7 @@ $(cat device-model-evidence.txt)"
             kernel-release.txt
             kernel-config.txt
             device-models.txt
+            device-model-evidence.txt
+            gemini-devices.json
           if-no-files-found: warn
           retention-days: 14
