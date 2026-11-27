@@ -20,7 +20,7 @@ jobs:
           CONFIRMATION: ${{ inputs.confirmation }}
         run: |
           set -euo pipefail
-          if [[ "$CONFIRMATION" != "DELETE ALL RELEASES" ]]; then
+          if [ "$CONFIRMATION" != "DELETE ALL RELEASES" ]; then
             echo "Confirmation text did not match. Nothing was deleted."
             exit 1
           fi
