@@ -177,24 +177,27 @@ jobs:
 
           if [ "$DEVICE_MODEL" = "all" ]; then
             : > device-models.txt
-            # Enumerate actual device DTS files (not shared .dtsi fragments).
+            # One entry per real board DTS; shared DTSI files are never releases.
             for base in kernel/arch/arm64/boot/dts kernel/arch/arm/boot/dts; do
               [ -d "$base" ] || continue
               find "$base" -type f -name '*.dts' -print0 |
               while IFS= read -r -d '' file; do
-                if ! grep -Eiq 'oppo|oplus|oneplus' "$file" || ! grep -Eiq 'model[[:space:]]*=' "$file"; then
+                if ! grep -Eiq 'oppo|oplus|oneplus' "$file"; then
                   continue
                 fi
-                MODEL="$(sed -nE 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$file" | head -n1)"
+                MODEL="$(grep -Eo 'model[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | head -n1 | sed -E 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"//; s/"$//')"
+                if [ -z "$MODEL" ]; then
+                  MODEL="$(grep -Eo 'compatible[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | head -n1 | sed -E 's/^[[:space:]]*compatible[[:space:]]*=[[:space:]]*"//; s/"$//')"
+                fi
                 [ -n "$MODEL" ] || MODEL="$(basename "$file" .dts)"
                 printf '%s\n' "$MODEL"
               done
-            done | sort -u > device-models.txt
+            done | sed '/^[[:space:]]*$/d' | sort -u > device-models.txt
             if [ ! -s device-models.txt ]; then
-              echo "No OPPO/OPlus device DTS models found in this kernel source."
+              echo "No OPPO/OPlus/OnePlus board DTS models found in this kernel source."
               exit 1
             fi
-            echo "Distinct device models discovered (one release each):"
+            echo "Detected board models:"
             cat device-models.txt
           else
             printf '%s\\n' "$DEVICE_MODEL" > device-models.txt
@@ -202,7 +205,7 @@ jobs:
 
           while IFS= read -r MODEL || [ -n "$MODEL" ]; do
             [ -n "$MODEL" ] || continue
-            MODEL_SLUG="$(basename "$MODEL" | sed -E 's/\\.(dts|dtsi)$//; s/[^A-Za-z0-9]+/-/g' | tr '[:upper:]' '[:lower:]')"
+            MODEL_SLUG="$(printf '%s' "$MODEL" | sed -E 's/[^A-Za-z0-9]+/-/g; s/^-|-$//g' | tr '[:upper:]' '[:lower:]')"
             RELEASE_SLUG="$(printf '%s' "$KERNEL_RELEASE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.+_-]+/-/g')"
             TAG="tango32-${MODEL_SLUG}-${RELEASE_SLUG}-${KERNEL_SHORT}"
             TITLE="Tango32 · ${MODEL} · ${KERNEL_RELEASE} (${KERNEL_SHORT})"
