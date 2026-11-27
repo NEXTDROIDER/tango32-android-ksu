@@ -34,9 +34,9 @@ The module exposes its interface through ioctl operations on `/dev/tango32`.
 
 1. Open **[Actions → Tango32 ARM64 kernel module build](../../actions/workflows/c-cpp.yml)**.
 2. Press **Run workflow**.
-3. Enter the phone/device model (for example, `OPPO CPH2819`).
+3. Enter a phone model (for example, `OPPO CPH2819`) or enter `all` to scan OPPO compatible identifiers in the selected kernel source's device tree.
 4. Choose the kernel repository and branch.
-5. Start the run and wait for the build.
+5. Start the run and wait for compilation and release publishing.
 
 Default source:
 - Repository: `oppo-source/android_kernel_oppo_sm6225`
@@ -44,7 +44,7 @@ Default source:
 
 ### Automatic releases
 
-After a successful compile, the workflow creates a GitHub Release if that exact device-model/kernel-source-commit combination has not already been released. Tag format:
+After a successful compile, normal mode creates a GitHub Release for the entered model. With `device_model=all`, the workflow scans the selected source's device-tree files for OPPO compatible identifiers and creates a separate release for each discovered identifier, skipping releases already published for that kernel commit. **This is identifier-based release labeling only: the module is compiled once for the selected source and is not independently validated for every listed device.** Tag format:
 
 ```
 tango32-<device>-<kernel-release>-<commit>
