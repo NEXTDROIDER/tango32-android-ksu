@@ -6,9 +6,9 @@
 
 **ARM32 compatibility support for ARM64-only Android kernels**
 
-[![Build](https://github.com/NEXTDROIDER/tango32-module/actions/workflows/c-cpp.yml/badge.svg)](https://github.com/NEXTDROIDER/tango32-module/actions/workflows/c-cpp.yml)
-[![Architecture](https://img.shields.io/badge/architecture-ARM64-blue)](https://github.com/NEXTDROIDER/tango32-module)
-[![Kernel](https://img.shields.io/badge/kernel-5.6%2B-informational)](https://github.com/NEXTDROIDER/tango32-module)
+[![Build](https://github.com/NEXTDROIDER/tango32-android-ksu/actions/workflows/c-cpp.yml/badge.svg)](https://github.com/NEXTDROIDER/tango32-android-ksu/actions/workflows/c-cpp.yml)
+[![Architecture](https://img.shields.io/badge/architecture-ARM64-blue)](https://github.com/NEXTDROIDER/tango32-android-ksu)
+[![Kernel](https://img.shields.io/badge/kernel-5.6%2B-informational)](https://github.com/NEXTDROIDER/tango32-android-ksu)
 [![License](https://img.shields.io/badge/license-GPL--2.0-green)](COPYING)
 
 <img src="assets/tango32-banner.svg" alt="Tango32 build pipeline" width="100%">
@@ -26,7 +26,8 @@ The module exposes its interface through ioctl operations on `/dev/tango32`.
 ## Highlights
 
 - ARM64 kernel-module build pipeline using Clang/LLVM.
-- Select kernel repository and branch when starting a workflow.
+- Select kernel repository, branch and exact target-device kernel release when starting a workflow.
+- Refuse to build or publish a flashable package when the source `kernelrelease` differs from the requested device release.
 - Device-model-labelled releases for successful builds.
 - Releases are deduplicated by **device model + kernel source commit**.
 - Build artifacts include the module, kernel config, kernel release, and build metadata.
