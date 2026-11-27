@@ -26,7 +26,6 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-
     steps:
       - name: Checkout Tango32
         uses: actions/checkout@v4
@@ -40,17 +39,13 @@ jobs:
             exit 1
           fi
           if [ "$DELAY" -gt 0 ]; then
-            echo "Waiting $DELAY minute(s) before starting..."
             sleep "$((DELAY * 60))"
           fi
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            bc bison flex build-essential git \
-            libssl-dev libelf-dev dwarves \
-            python3 perl make clang lld llvm
+          sudo apt-get install -y bc bison flex build-essential git libssl-dev libelf-dev dwarves python3 perl make clang lld llvm
 
       - name: Clone selected kernel source
         env:
@@ -58,15 +53,13 @@ jobs:
           KERNEL_BRANCH: ${{ inputs.kernel_branch }}
         run: |
           if ! [[ "$KERNEL_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-            echo "Invalid repo format. Expected owner/repository"
+            echo "Invalid repo format"
             exit 1
           fi
-          git clone --depth=1 --single-branch --branch "$KERNEL_BRANCH" \
-            "https://github.com/$KERNEL_REPO.git" kernel
+          git clone --depth=1 --single-branch --branch "$KERNEL_BRANCH" "https://github.com/$KERNEL_REPO.git" kernel
           echo "Kernel commit: $(git -C kernel rev-parse HEAD)"
-          echo "Kernel branch: $KERNEL_BRANCH"
 
-      - name: Patch missing vendor Kconfig includes for compile-check
+      - name: Patch absent vendor Kconfig source entries (compile-check only)
         run: |
           cd kernel
           python3 - <<'PY'
@@ -74,76 +67,31 @@ jobs:
           import re
           root = Path.cwd()
           missing = []
-          for kconfig in root.rglob("Kconfig*"):
-              if not kconfig.is_file():
+          for path in root.rglob("Kconfig*"):
+              if not path.is_file():
                   continue
-              lines = kconfig.read_text(errors="replace").splitlines()
+              try:
+                  original = path.read_text(errors="replace")
+              except OSError:
+                  continue
+              lines = original.splitlines()
               changed = False
               for i, line in enumerate(lines):
-                  m = re.match(r'^(\\s*)(source|rsource|osource|orsource)\\s+"([^"]+)"\\s*        run: |
-          cd kernel
-          make ARCH=arm64 LLVM=1 defconfig
-          scripts/config --enable FUTEX
-          scripts/config --enable COMPAT
-          scripts/config --enable MODULES
-          # Compile-only: modules_prepare does not provide full Module.symvers.
-          scripts/config --disable MODVERSIONS
-          make ARCH=arm64 LLVM=1 olddefconfig
-          make ARCH=arm64 LLVM=1 modules_prepare
-          echo "Kernel version: $(make ARCH=arm64 LLVM=1 kernelversion)"
-          grep -E 'CONFIG_(FUTEX|COMPAT|MODULES|MODVERSIONS)=' .config || true
-          cp .config ../kernel-config.txt
-          make ARCH=arm64 LLVM=1 kernelrelease > ../kernel-release.txt
-
-      - name: Build Tango32 module (compile-only)
-        run: |
-          make -C kernel M="$GITHUB_WORKSPACE" \
-            ARCH=arm64 LLVM=1 CONFIG_TANGO32=m W=1 modules
-
-      - name: Collect build diagnostics
-        if: always()
-        run: |
-          {
-            echo "Repo: ${{ inputs.kernel_repo }}"
-            echo "Branch: ${{ inputs.kernel_branch }}"
-            echo "Kernel commit:"
-            git -C kernel rev-parse HEAD 2>/dev/null || true
-            echo "Kernel release:"
-            cat kernel-release.txt 2>/dev/null || true
-            echo "Compiler:"
-            clang --version 2>/dev/null || true
-            echo "Module:"
-            find . -maxdepth 3 -type f -name '*.ko' -print
-          } > build-info.txt
-          cp kernel/.config kernel-config.txt 2>/dev/null || true
-
-      - name: Upload module and diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tango32-compile-check
-          path: |
-            *.ko
-            build-info.txt
-            kernel-release.txt
-            kernel-config.txt
-          if-no-files-found: warn
-          retention-days: 14
-, line)
-                  if not m:
+                  match = re.match(r'^\s*(source|rsource|osource|orsource)\s+"([^"]+)"\s*$', line)
+                  if not match:
                       continue
-                  target = m.group(3)
+                  target = match.group(2)
                   if "$" in target or "*" in target:
                       continue
-                  candidates = [root / target, kconfig.parent / target]
-                  if not any(p.exists() for p in candidates):
-                      lines[i] = m.group(1) + "# compile-check: skipped missing vendor include: " + line.strip()
-                      missing.append(f"{kconfig.relative_to(root)} -> {target}")
+                  candidates = [root / target, path.parent / target]
+                  if not any(candidate.exists() for candidate in candidates):
+                      lines[i] = "# compile-check: skipped absent vendor Kconfig: " + line.strip()
+                      missing.append(f"{path.relative_to(root)} -> {target}")
                       changed = True
               if changed:
-                  kconfig.write_text("\\n".join(lines) + "\\n")
-          print("Skipped missing Kconfig includes:")
-          print("\\n".join(missing) if missing else "(none)")
+                  path.write_text("\n".join(lines) + "\n")
+          print("Missing vendor Kconfig entries skipped:")
+          print("\n".join(missing) if missing else "none")
           PY
 
       - name: Configure ARM64 kernel for compile-check
@@ -153,38 +101,35 @@ jobs:
           scripts/config --enable FUTEX
           scripts/config --enable COMPAT
           scripts/config --enable MODULES
-          # Compile-only: modules_prepare does not provide full Module.symvers.
           scripts/config --disable MODVERSIONS
           make ARCH=arm64 LLVM=1 olddefconfig
           make ARCH=arm64 LLVM=1 modules_prepare
-          echo "Kernel version: $(make ARCH=arm64 LLVM=1 kernelversion)"
+          make ARCH=arm64 LLVM=1 kernelrelease > ../kernel-release.txt
           grep -E 'CONFIG_(FUTEX|COMPAT|MODULES|MODVERSIONS)=' .config || true
           cp .config ../kernel-config.txt
-          make ARCH=arm64 LLVM=1 kernelrelease > ../kernel-release.txt
 
-      - name: Build Tango32 module (compile-only)
+      - name: Build Tango32 module (compile-check)
         run: |
-          make -C kernel M="$GITHUB_WORKSPACE" \
-            ARCH=arm64 LLVM=1 CONFIG_TANGO32=m W=1 modules
+          make -C kernel M="$GITHUB_WORKSPACE" ARCH=arm64 LLVM=1 CONFIG_TANGO32=m W=1 modules
 
-      - name: Collect build diagnostics
+      - name: Collect diagnostics
         if: always()
         run: |
           {
-            echo "Repo: ${{ inputs.kernel_repo }}"
-            echo "Branch: ${{ inputs.kernel_branch }}"
+            echo "Kernel repository: ${{ inputs.kernel_repo }}"
+            echo "Kernel branch: ${{ inputs.kernel_branch }}"
             echo "Kernel commit:"
             git -C kernel rev-parse HEAD 2>/dev/null || true
             echo "Kernel release:"
             cat kernel-release.txt 2>/dev/null || true
             echo "Compiler:"
             clang --version 2>/dev/null || true
-            echo "Module:"
-            find . -maxdepth 3 -type f -name '*.ko' -print
+            echo "Module files:"
+            find . -maxdepth 3 -name '*.ko' -print
           } > build-info.txt
           cp kernel/.config kernel-config.txt 2>/dev/null || true
 
-      - name: Upload module and diagnostics
+      - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
