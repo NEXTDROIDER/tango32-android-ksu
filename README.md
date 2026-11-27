@@ -2,6 +2,8 @@
 
 # Tango32 ARM64 Module
 
+**Language:** 🇬🇧 English · [🇷🇺 Русский](README.ru.md)
+
 **ARM32 compatibility support for ARM64-only Android kernels**
 
 [![Build](https://github.com/NEXTDROIDER/tango32-module/actions/workflows/c-cpp.yml/badge.svg)](https://github.com/NEXTDROIDER/tango32-module/actions/workflows/c-cpp.yml)
