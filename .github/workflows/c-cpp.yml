@@ -1,0 +1,48 @@
+name: C/C++ CI
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: ./configure
+
+      - name: Build
+        run: make
+
+      - name: Run tests
+        run: make check
+
+      - name: Distribution check
+        run: make distcheck
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            **/*.o
+            **/*.a
+            **/*.so
+            **/*.exe
+            **/*.zip
+            **/*.tar.gz
+          if-no-files-found: warn
+          compression-level: 6
+          retention-days: 7
+
+      - name: Download Build Artifact
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: build-artifacts
+          path: downloaded-artifacts
