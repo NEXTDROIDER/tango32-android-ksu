@@ -4,7 +4,7 @@ Install the release ZIP in KernelSU Manager → Modules → Install from storage
 
 The package includes:
 - `tango32.ko` kernel module
-- `tango32-install-apk` root helper for APK installation with low-target-SDK bypass
+- `tango32-install-apk` helper stored inside the module folder (no system overlay)
 - **Tango32 Root Manager Android APK**, stored inside the module at `installer/Tango32Installer.apk`
 
 At boot, `service.sh` attempts to load the module and install/update the bundled app with `pm install -r`. Android installs it as a regular app under `/data/app`. The package does **not** place the app in `/system`, `/system/app`, or another system partition path.
