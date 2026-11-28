@@ -5,10 +5,9 @@ Install the release ZIP in KernelSU Manager → Modules → Install from storage
 The package includes:
 - `tango32.ko` kernel module
 - `tango32-install-apk` root helper for APK installation with low-target-SDK bypass
-- **Tango32 Installer Android app APK**, bundled in `system/app/Tango32Installer/`
+- **Tango32 Root Manager Android APK**, stored inside the module at `installer/Tango32Installer.apk`
 
-At boot, `service.sh` attempts to load the module and install/update the bundled app using:
-`pm install --bypass-low-target-sdk-block -r`
+At boot, `service.sh` attempts to load the module and install/update the bundled app with `pm install -r`. Android installs it as a regular app under `/data/app`. The package does **not** place the app in `/system`, `/system/app`, or another system partition path.
 
 Logs: `/data/local/tmp/tango32-ksu.log`
 
@@ -17,4 +16,4 @@ The APK helper can also be called manually:
 su -c 'tango32-install-apk /storage/emulated/0/Download/app.apk'
 ```
 
-This is experimental. Low target-SDK bypass does not make unsupported apps function on modern Android. Kernel compatibility remains your responsibility.
+This is experimental. Kernel compatibility remains your responsibility.
